@@ -26,7 +26,7 @@ export class AuthService {
     private jwtService: JwtService,
     private readonly mailerService: MailerService,
     private userRolesService: UserRolesService,
-  ) {}
+  ) { }
 
   async signIn(username: string, pass: string) {
     const user = await this.usersService.findOneByUsername(username);
@@ -42,7 +42,7 @@ export class AuthService {
     let keycloakToken = null;
     try {
       const params = new URLSearchParams();
-      params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'truelook-api'); 
+      params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'truelook-api');
       params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET || '');
       params.append('grant_type', 'password');
       params.append('username', username);
@@ -57,7 +57,7 @@ export class AuthService {
           },
         },
       );
-      
+
       keycloakToken = kcResponse.data.access_token;
       console.log('Lấy token từ Keycloak thành công!');
     } catch (error) {
@@ -204,8 +204,24 @@ export class AuthService {
   }
 
   async register(createUserDto: CreateUserDto) {
+    // Kiểm tra email đã tồn tại chưa
+    const existingUser = await this.usersService.findOneByEmail(
+      createUserDto.email,
+    );
+
+    if (existingUser) {
+      return {
+        message: 'Email da ton tai!',
+      };
+    }
+
+    // Nếu chưa tồn tại thì tạo tài khoản
     const user = await this.usersService.create(createUserDto);
-    await this.userRolesService.assignRoleByName(user.id, 'Customer');
+
+    await this.userRolesService.assignRoleByName(
+      user.id,
+      'Customer',
+    );
 
     return {
       message: 'Dang ky thanh cong!',
@@ -214,7 +230,7 @@ export class AuthService {
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
-    // 🪄 Lấy dữ liệu từ dto ra. Tên biến ở đây sẽ khớp 100% với file DTO của ông
+    //  Lấy dữ liệu từ dto ra. Tên biến ở đây sẽ khớp 100% với file DTO của ông
     const { oldPassword, newPassword } = dto;
 
     const user = await this.usersService.findOne(userId);
