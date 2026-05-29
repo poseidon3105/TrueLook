@@ -5,7 +5,8 @@ import axios from 'axios';
 
 import { Shipping } from './entities/shipping.entity';
 import { NhanhConfig } from './entities/nhanh-config.entity';
-
+import { Order } from '../orders/entities/order.entity';
+import { OrderDetail } from '../order_details/entities/order_detail.entity';
 import { CreateShippingDto } from './dto/create-shipping.dto';
 import { UpdateShippingDto } from './dto/update-shipping.dto';
 import { ShippingProvidersService } from '../shipping_providers/shipping_providers.service';
@@ -13,6 +14,8 @@ import { ShippingServicesService } from '../shipping_services/shipping_services.
 
 @Injectable()
 export class ShippingService {
+  // in-memory cache for Ahamove token to avoid requesting too often
+  private ahamoveTokenCache: { token: string; expiresAt: number } | null = null;
   constructor(
     @InjectRepository(Shipping)
     private shippingRepo: Repository<Shipping>,
@@ -22,7 +25,12 @@ export class ShippingService {
 
     private providersService: ShippingProvidersService,
     private servicesService: ShippingServicesService,
-  ) {}
+    @InjectRepository(Order)
+    private orderRepo: Repository<Order>,
+
+    @InjectRepository(OrderDetail)
+    private orderDetailRepo: Repository<OrderDetail>,
+  ) { }
 
   /*
   =============================
@@ -30,6 +38,1061 @@ export class ShippingService {
   =============================
   */
 
+
+
+  /*
+  =====================================================
+  AHAMOVE INTEGRATION (simple wrappers using env vars)
+  =====================================================
+  */
+  private async getOrderItems(orderId: string) {
+    const order = await this.orderRepo.findOne({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new BadRequestException(
+        `Order ${orderId} không tồn tại`,
+      );
+    }
+
+    const orderDetails =
+      await this.orderDetailRepo.find({
+        where: {
+          order_id: orderId,
+        },
+      });
+
+    if (!orderDetails.length) {
+      throw new BadRequestException(
+        'Order chưa có sản phẩm',
+      );
+    }
+
+    return {
+      order,
+      orderDetails,
+    };
+  }
+
+  private buildAhamoveItems(
+    orderDetails: OrderDetail[],
+  ) {
+    return orderDetails.map((item) => ({
+      name: `Variant ${item.variant_id}`,
+      num: item.quantity,
+      price: Number(item.price),
+    }));
+  }
+
+  async getAhamoveToken() {
+    try {
+      return await this.fetchAhamoveTokenWithFallback();
+    } catch (error: any) {
+      console.log('===== AHAMOVE TOKEN ERROR =====');
+      console.log(error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  // Try token endpoints with sensible fallbacks and return parsed response
+  private async fetchAhamoveTokenWithFallback() {
+    const apiKey = process.env.AHAMOVE_API_KEY || process.env.AHAMOVE_API;
+    const mobile = process.env.AHAMOVE_PHONE;
+
+    const attempts = ['/accounts/token', '/v3/accounts/token'];
+
+    for (const p of attempts) {
+      try {
+        const url = this.ahamoveUrl(p);
+        console.log('[Ahamove] requesting token from', url);
+        const response = await axios.post(url, { mobile, api_key: apiKey }, { headers: { 'Content-Type': 'application/json' } });
+        // normalize response
+        if (response?.data) return response.data;
+      } catch (err: any) {
+        console.log('[Ahamove] token attempt failed for', p, err.response?.data || err.message);
+      }
+    }
+
+    throw new Error('AHAMOVE token endpoints all failed');
+  }
+
+  private ahamoveBase(): string {
+    // read raw env, strip accidental repeated key or trailing slashes
+    let raw = process.env.AHAMOVE_BASE_URL || '';
+    // if someone accidentally put 'AHAMOVE_BASE_URL=...' in the value, strip it
+    raw = raw.replace(/^AHAMOVE_BASE_URL=/i, '');
+    // remove trailing slashes
+    raw = raw.replace(/\/+$/g, '');
+    return raw;
+  }
+
+  private ahamoveUrl(path: string): string {
+    const base = this.ahamoveBase();
+    if (!base) throw new Error('AHAMOVE_BASE_URL is not configured');
+    if (!path) return base;
+    return `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+  }
+
+  private normalizeAhamovePayload(payload: any, action: 'estimate' | 'create-order') {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new BadRequestException('Payload Ahamove phải là object JSON');
+    }
+
+    const normalized: any = { ...payload };
+
+    if (normalized.order_time == null) {
+      normalized.order_time = 0;
+    }
+
+    if (!Array.isArray(normalized.path) || normalized.path.length < 2) {
+      throw new BadRequestException('Payload Ahamove cần trường path là mảng có ít nhất 2 điểm');
+    }
+
+    normalized.path = normalized.path.map((item: any, index: number) => {
+      if (!item || typeof item !== 'object') {
+        throw new BadRequestException(`path[${index}] phải là object`);
+      }
+      if (item.type && !['PICKUP', 'DELIVERY'].includes(item.type)) {
+        throw new BadRequestException(`path[${index}].type phải là PICKUP hoặc DELIVERY nếu có`);
+      }
+      if (!item.address) {
+        throw new BadRequestException(`path[${index}].address không được để trống`);
+      }
+      if (!item.name) {
+        throw new BadRequestException(`path[${index}].name không được để trống`);
+      }
+      if (!item.mobile) {
+        throw new BadRequestException(`path[${index}].mobile không được để trống`);
+      }
+      return { ...item };
+    });
+
+    if (!normalized.service_id && !normalized.group_service_id) {
+      throw new BadRequestException('Payload Ahamove cần service_id hoặc group_service_id');
+    }
+    if (normalized.group_service_id && typeof normalized.group_service_id !== 'string') {
+      throw new BadRequestException('group_service_id phải là chuỗi');
+    }
+    if (normalized.service_id && typeof normalized.service_id !== 'string' && typeof normalized.service_id !== 'number') {
+      throw new BadRequestException('service_id phải là chuỗi hoặc số');
+    }
+
+    if (normalized.requests != null) {
+      if (!Array.isArray(normalized.requests)) {
+        throw new BadRequestException('requests phải là mảng');
+      }
+      normalized.requests = normalized.requests.map((item: any, index: number) => {
+        if (!item || typeof item !== 'object') {
+          throw new BadRequestException(`requests[${index}] phải là object`);
+        }
+        if (!item._id) {
+          throw new BadRequestException(`requests[${index}]._id không được để trống`);
+        }
+        return { ...item };
+      });
+    }
+
+    if (normalized.group_requests != null) {
+      if (!Array.isArray(normalized.group_requests)) {
+        throw new BadRequestException('group_requests phải là mảng');
+      }
+      normalized.group_requests = normalized.group_requests.map((item: any, index: number) => {
+        if (!item || typeof item !== 'object') {
+          throw new BadRequestException(`group_requests[${index}] phải là object`);
+        }
+        if (!item._id) {
+          throw new BadRequestException(`group_requests[${index}]._id không được để trống`);
+        }
+        if (item.num != null && (typeof item.num !== 'number' || item.num <= 0)) {
+          throw new BadRequestException(`group_requests[${index}].num phải là số lớn hơn 0`);
+        }
+        if (item.tier_code != null && typeof item.tier_code !== 'string') {
+          throw new BadRequestException(`group_requests[${index}].tier_code phải là chuỗi`);
+        }
+        return { ...item };
+      });
+    }
+
+    if (action === 'create-order') {
+      if (!normalized.items || !Array.isArray(normalized.items) || normalized.items.length === 0) {
+        throw new BadRequestException('Payload tạo đơn Ahamove cần trường items');
+      }
+      normalized.items = normalized.items.map((item: any, index: number) => {
+        if (!item || typeof item !== 'object') {
+          throw new BadRequestException(`items[${index}] phải là object`);
+        }
+        if (!item.name) {
+          throw new BadRequestException(`items[${index}].name không được để trống`);
+        }
+        const quantity = item.num ?? item.quantity;
+        if (quantity == null || typeof quantity !== 'number' || quantity <= 0) {
+          throw new BadRequestException(`items[${index}].num (hoặc quantity) phải là số lớn hơn 0`);
+        }
+        if (item.price == null || typeof item.price !== 'number' || item.price < 0) {
+          throw new BadRequestException(`items[${index}].price phải là số không âm`);
+        }
+        return { ...item };
+      });
+    }
+
+    if (normalized.package_detail != null) {
+      if (Array.isArray(normalized.package_detail)) {
+        normalized.package_detail = normalized.package_detail.map((item: any, index: number) => {
+          if (!item || typeof item !== 'object') {
+            throw new BadRequestException(`package_detail[${index}] phải là object`);
+          }
+          if (item.weight == null || typeof item.weight !== 'number' || item.weight <= 0) {
+            throw new BadRequestException(`package_detail[${index}].weight phải là số lớn hơn 0`);
+          }
+          return { ...item };
+        });
+      } else if (typeof normalized.package_detail === 'object') {
+        const weight = normalized.package_detail.weight;
+        if (weight == null || typeof weight !== 'number' || weight <= 0) {
+          throw new BadRequestException('package_detail.weight phải là số lớn hơn 0');
+        }
+      } else {
+        throw new BadRequestException('package_detail phải là object hoặc mảng object');
+      }
+    }
+
+    if (!normalized.payment_method) {
+      normalized.payment_method = 'CASH';
+    }
+
+    return normalized;
+  }
+
+  private mapAhamoveError(error: any) {
+    if (error.response?.data) {
+      const data = error.response.data;
+      const message =
+        data.description || data.message || data.error || data.title || JSON.stringify(data);
+      return new BadRequestException(`Ahamove lỗi: ${message}`);
+    }
+    return error;
+  }
+
+  private async getAhamoveAuthHeaders() {
+    // try to use cached token first
+    if (this.ahamoveTokenCache && Date.now() < this.ahamoveTokenCache.expiresAt) {
+      return {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.ahamoveTokenCache.token}`,
+      };
+    }
+
+    const tokenResponse = await this.getAhamoveToken();
+    const token =
+      tokenResponse?.token || tokenResponse?.access_token || tokenResponse?.data?.token || tokenResponse?.data?.access_token || tokenResponse?.accessToken;
+
+    if (!token) {
+      throw new Error('Không lấy được token Ahamove để gọi API');
+    }
+
+    // cache token if possible
+    let expiresAt = Date.now() + 60 * 60 * 1000; // default 1 hour
+    const expiresIn = tokenResponse?.expires_in || tokenResponse?.data?.expires_in || tokenResponse?.expiredAt || tokenResponse?.data?.expiredAt;
+    if (typeof expiresIn === 'number') {
+      expiresAt = Date.now() + expiresIn * 1000;
+    }
+
+    this.ahamoveTokenCache = { token, expiresAt };
+
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    };
+  }
+
+  async createAhamoveOrder(payload: any) {
+    try {
+      const normalizedPayload = this.normalizeAhamovePayload(payload, 'create-order');
+      const headers = await this.getAhamoveAuthHeaders();
+      const url = this.ahamoveUrl('/v3/orders');
+      console.log('[Ahamove] create-order url=', url, 'payload=', JSON.stringify(normalizedPayload));
+      const response = await axios.post(url, normalizedPayload, { headers });
+
+      const data = response.data;
+      // Normalize common shapes
+      const orderId = data?.order_id || data?.id || data?.data?.order_id || data?.data?.id || data?.order?.id;
+      const price = data?.price || data?.total_price || data?.data?.price || data?.data?.total_price || data?.order?.price;
+      const shared_link = data?.shared_link || data?.data?.shared_link || data?.order?.shared_link;
+
+      return { raw: data, order_id: orderId, price, shared_link };
+    } catch (error: any) {
+      console.log('===== AHAMOVE CREATE ORDER ERROR =====');
+      console.log(error.response?.data || error.message);
+      throw this.mapAhamoveError(error);
+    }
+  }
+
+  async getAhamoveOrders(payload: any) {
+    try {
+      const headers = await this.getAhamoveAuthHeaders();
+      const url = this.ahamoveUrl('/v3/orders/query');
+      console.log('[Ahamove] get-orders url=', url, 'payload=', JSON.stringify(payload));
+      const response = await axios.post(url, payload, { headers });
+
+      return response.data;
+    } catch (error: any) {
+      console.log('===== AHAMOVE GET ORDERS ERROR =====');
+      console.log(error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  async updateAhamoveOrder(payload: any) {
+    try {
+      if (!payload?.order_id) {
+        throw new BadRequestException('Thiếu order_id');
+      }
+
+      const body: any = {
+        order_id: payload.order_id,
+      };
+
+      // optional fields
+      if (payload.payment_method) {
+        body.payment_method = payload.payment_method;
+      }
+
+      if (payload.remarks) {
+        body.remarks = payload.remarks;
+      }
+
+      if (payload.path) {
+        body.path = payload.path;
+      }
+
+      if (payload.items) {
+        body.items = payload.items;
+      }
+
+      const headers = await this.getAhamoveAuthHeaders();
+
+      const url = this.ahamoveUrl('/v3/orders/update');
+
+      console.log(
+        '[Ahamove] update-order url=',
+        url,
+        'payload=',
+        JSON.stringify(body),
+      );
+
+      const response = await axios.post(url, body, {
+        headers,
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.log('===== AHAMOVE UPDATE ORDER ERROR =====');
+      console.log(error.response?.data || error.message);
+
+      throw this.mapAhamoveError(error);
+    }
+  }
+
+  async cancelAhamoveOrder(payload: {
+    order_id: string;
+    comment?: string;
+  }) {
+    try {
+      if (!payload?.order_id) {
+        throw new BadRequestException(
+          'Thiếu order_id',
+        );
+      }
+
+      const headers =
+        await this.getAhamoveAuthHeaders();
+
+      const url =
+        this.ahamoveUrl(
+          `/v3/orders/${payload.order_id}`,
+        );
+
+      const body = {
+        comment:
+          payload.comment ||
+          'Khách hàng muốn hủy đơn',
+      };
+
+      console.log(
+        '[Ahamove] cancel-order url=',
+        url,
+      );
+
+      console.log(
+        '[Ahamove] cancel-order payload=',
+        JSON.stringify(body),
+      );
+
+      const response = await axios.delete(
+        url,
+        {
+          headers,
+          data: body,
+        },
+      );
+
+      // update local db
+      const shippingRecord =
+        await this.shippingRepo.findOne({
+          where: {
+            nhanh_id: String(payload.order_id),
+          },
+        });
+
+      if (shippingRecord) {
+        shippingRecord.status =
+          'Canceled';
+
+        shippingRecord.update_at =
+          new Date();
+
+        await this.shippingRepo.save(
+          shippingRecord,
+        );
+      }
+
+      return {
+        success: true,
+        data: response.data,
+      };
+
+    } catch (error: any) {
+
+      console.log(
+        '===== AHAMOVE CANCEL ORDER ERROR =====',
+      );
+
+      console.log(
+        error.response?.data ||
+        error.message,
+      );
+
+      throw this.mapAhamoveError(
+        error,
+      );
+    }
+  }
+
+  async handleAhamoveWebhook(payload: any) {
+    try {
+      console.log(
+        '===== AHAMOVE WEBHOOK =====',
+      );
+
+      console.log(
+        JSON.stringify(payload, null, 2),
+      );
+
+      const order =
+        payload?.order ||
+        payload?.data ||
+        payload;
+
+      const orderId =
+        order?._id ||
+        order?.id ||
+        order?.order_id;
+
+      const rawStatus =
+        order?.status;
+
+      if (!orderId || !rawStatus) {
+        return {
+          success: false,
+          message:
+            'Missing orderId/status',
+        };
+      }
+
+      const shippingRecord =
+        await this.shippingRepo.findOne({
+          where: {
+            ahamove_id:
+              String(orderId),
+          } as any,
+        });
+
+      if (!shippingRecord) {
+        console.log(
+          '[Webhook] shipping not found:',
+          orderId,
+        );
+
+        return {
+          success: true,
+        };
+      }
+
+      const status =
+        String(rawStatus)
+          .trim()
+          .toUpperCase();
+
+      let localStatus =
+        shippingRecord.status;
+
+      switch (status) {
+        case 'ASSIGNING':
+          localStatus = 'Pending';
+          break;
+
+        case 'ACCEPTED':
+          localStatus =
+            'ReadyToPick';
+          break;
+
+        case 'PICKING':
+          localStatus = 'Picking';
+          break;
+
+        case 'DELIVERING':
+        case 'ON_GOING':
+          localStatus =
+            'Delivering';
+          break;
+
+        case 'COMPLETED':
+        case 'DELIVERED':
+          localStatus =
+            'Delivered';
+          break;
+
+        case 'CANCELED':
+        case 'CANCELLED':
+        case 'FAILED':
+          localStatus =
+            'Canceled';
+          break;
+      }
+
+      if (
+        shippingRecord.status ===
+        localStatus
+      ) {
+        return {
+          success: true,
+          message:
+            'Status unchanged',
+        };
+      }
+
+      shippingRecord.status =
+        localStatus;
+
+      shippingRecord.update_at =
+        new Date();
+
+      await this.shippingRepo.save(
+        shippingRecord,
+      );
+
+      console.log(
+        `[Webhook] ${orderId} -> ${localStatus}`,
+      );
+
+      return {
+        success: true,
+      };
+    } catch (error: any) {
+      console.log(
+        '===== WEBHOOK ERROR =====',
+      );
+
+      console.log(error.message);
+
+      return {
+        success: false,
+        message: error.message,
+      };
+    }
+  }
+
+  async processAhamoveCheckout(
+    orderId: string,
+    providerId: string,
+    serviceId: string,
+    extraPayload: any,
+  ) {
+    console.log('==============================');
+    console.log('[AHAMOVE CHECKOUT] START');
+    console.log('orderId:', orderId);
+    console.log('providerId:', providerId);
+    console.log('serviceId:', serviceId);
+    console.log('extraPayload:', extraPayload);
+    console.log('==============================');
+
+    const PICK_ADDRESS =
+      'Tòa Bs16, 88 Phước Thiện, Khu phố 29, Long Bình, Hồ Chí Minh 71300, Việt Nam';
+
+    const PICK_MOBILE = '0822030768';
+
+    try {
+      /*
+      =====================================
+      0. GET ORDER
+      =====================================
+      */
+      console.log('[STEP 0] Fetch order...');
+
+      const order = await this.orderRepo.findOne({
+        where: { id: orderId },
+        relations: ['orderDetails', 'orderDetails.variant'],
+      });
+
+      console.log('[STEP 0] ORDER RESULT:', order ? 'FOUND' : 'NOT FOUND');
+
+      if (!order) {
+        throw new BadRequestException(`Order ${orderId} không tồn tại`);
+      }
+
+      /*
+      =====================================
+      1. PROVIDER
+      =====================================
+      */
+      console.log('[STEP 1] Provider lookup...');
+
+      const providerCode = 'AHAMOVE';
+
+      let provider = await this.providersService
+        .findByCode(providerCode)
+        .catch((err) => {
+          console.log('[STEP 1] Provider find error:', err);
+          return null;
+        });
+
+      if (!provider) {
+        console.log('[STEP 1] Provider not found → creating...');
+
+        provider = await this.providersService.create({
+          id: providerId || 'AHAMOVE',
+          name: 'Ahamove',
+          code: providerCode,
+          status: 'Active',
+        } as any);
+      }
+
+      console.log('[STEP 1] Provider:', provider);
+
+      /*
+      =====================================
+      2. SERVICE
+      =====================================
+      */
+      console.log('[STEP 2] Service resolve...');
+
+      const serviceCode = extraPayload.service_id || 'SGN-BIKE';
+
+      let service = await this.servicesService
+        .findByCode(serviceCode)
+        .catch((err) => {
+          console.log('[STEP 2] Service find error:', err);
+          return null;
+        });
+
+      if (!service) {
+        console.log('[STEP 2] Service not found → creating...');
+
+        service = await this.servicesService.create({
+          id: serviceId || serviceCode,
+          name: serviceCode,
+          service_code: serviceCode,
+          status: 'Active',
+        } as any);
+      }
+
+      console.log('[STEP 2] Service:', service);
+
+      /*
+      =====================================
+      3. BUILD ITEMS
+      =====================================
+      */
+      console.log('[STEP 3] Build items...');
+
+      const items = order.orderDetails.map((detail: any) => ({
+        productId: detail.product_id,
+        variantId: detail.product_variant_id,
+        code: detail.code,
+        name: detail.variant?.name || detail.name,
+        color: detail.color,
+        quantity: detail.quantity,
+        price: Number(detail.price),
+        total: Number(detail.price) * detail.quantity,
+      }));
+
+      console.log('[STEP 3] ITEMS:', JSON.stringify(items, null, 2));
+
+      /*
+      =====================================
+      4. COD
+      =====================================
+      */
+      const codAmount = order.orderDetails.reduce(
+        (total: number, item: any) =>
+          total + Number(item.price) * Number(item.quantity),
+        0,
+      );
+
+      console.log('[STEP 4] COD:', codAmount);
+
+      /*
+      =====================================
+      5. BUILD AHAMOVE PAYLOAD
+      =====================================
+      */
+      console.log('[STEP 5] Build Ahamove payload...');
+
+      const ahamovePayload = {
+        order_time: 0,
+        path: [
+          {
+            address: PICK_ADDRESS,
+            mobile: PICK_MOBILE,
+            name: 'TrueLook Store',
+          },
+          {
+            address: extraPayload.drop_address,
+            mobile: extraPayload.drop_mobile,
+            name: extraPayload.drop_name,
+            cod: codAmount,
+          },
+        ],
+        service_id: serviceCode,
+        payment_method: extraPayload.payment_method || 'CASH',
+        remarks: extraPayload.remarks || '',
+        promo_code: extraPayload.promo_code || '',
+        requests: [],
+        group_requests: [],
+        items,
+      };
+
+      console.log(
+        '[STEP 5] AHAMOVE PAYLOAD:',
+        JSON.stringify(ahamovePayload, null, 2),
+      );
+
+      /*
+      =====================================
+      6. CREATE ORDER AHAMOVE
+      =====================================
+      */
+      console.log('[STEP 6] Calling Ahamove API...');
+
+      let ahamoveResult;
+
+      try {
+        ahamoveResult = await this.createAhamoveOrder(ahamovePayload);
+
+        console.log('[STEP 6] AHAMOVE RESPONSE SUCCESS:');
+        console.log(JSON.stringify(ahamoveResult, null, 2));
+      } catch (err) {
+        console.log('[STEP 6] AHAMOVE ERROR:');
+        console.log(err?.response?.data || err.message || err);
+
+        throw err;
+      }
+
+      /*
+      =====================================
+      7. SAVE SHIPPING
+      =====================================
+      */
+      console.log('[STEP 7] Saving shipping...');
+
+      const shippingId = String(Date.now());
+
+      const newShipping = this.shippingRepo.create({
+        id: shippingId,
+        order_id: orderId,
+        provider_id: provider.id,
+        service_id: service.id,
+        status: 'Pending',
+        ship_fee: ahamoveResult?.price || 0,
+        cod_amount: codAmount,
+        ahamove_id: String(ahamoveResult?.order_id || ''),
+        tracking_url: ahamoveResult?.shared_link,
+        create_at: new Date(),
+        update_at: new Date(),
+      } as any);
+
+      console.log('[STEP 7] SHIPPING ENTITY:', newShipping);
+
+      const savedShipping = await this.shippingRepo.save(newShipping);
+
+      console.log('[STEP 7] SHIPPING SAVED SUCCESS:', savedShipping);
+
+      /*
+      =====================================
+      8. RETURN
+      =====================================
+      */
+      console.log('[STEP 8] DONE SUCCESS');
+
+      return {
+        success: true,
+        ahamove_order: ahamoveResult,
+        shipping: savedShipping,
+      };
+    } catch (error) {
+      console.log('==============================');
+      console.log('[AHAMOVE CHECKOUT ERROR]');
+      console.log(error?.response?.data || error.message || error);
+      console.log('==============================');
+
+      throw error;
+    }
+  }
+
+  async estimateAhamoveFee(
+    orderId: string,
+    extraPayload: any,
+  ) {
+
+    const PICK_ADDRESS =
+      'Tòa Bs16, 88 Phước Thiện, Khu phố 29, Long Bình, Hồ Chí Minh 71300, Việt Nam';
+
+    const PICK_MOBILE =
+      '0822030768';
+
+    try {
+
+      /*
+      =====================================
+      GET ORDER
+      =====================================
+      */
+
+      const order =
+        await this.orderRepo.findOne({
+          where: { id: orderId },
+          relations: [
+            'orderDetails',
+            'orderDetails.variant',
+          ],
+        });
+
+      if (!order) {
+        throw new BadRequestException(
+          `Order ${orderId} không tồn tại`,
+        );
+      }
+
+      /*
+      =====================================
+      BUILD ITEMS
+      =====================================
+      */
+
+      const items =
+        order.orderDetails.map(
+          (detail: any, index: number) => ({
+
+            _id:
+              String(index + 1),
+
+            name:
+              detail.variant?.name ||
+              'Product',
+
+            price:
+              Number(detail.price),
+
+            num:
+              Number(detail.quantity),
+          }),
+        );
+
+      /*
+      =====================================
+      COD
+      =====================================
+      */
+
+      const codAmount =
+        order.orderDetails.reduce(
+          (
+            total: number,
+            item: any,
+          ) =>
+            total +
+            Number(item.price) *
+            Number(item.quantity),
+
+          0,
+        );
+
+      /*
+      =====================================
+      ESTIMATE PAYLOAD
+      =====================================
+      */
+
+      const payload = {
+
+        order_time: 0,
+
+        path: [
+
+          {
+            address:
+              PICK_ADDRESS,
+
+            name:
+              'TrueLook Store',
+
+            mobile:
+              PICK_MOBILE,
+
+            /*
+            NÊN CÓ LAT LNG
+            */
+
+            lat:
+              10.841667,
+
+            lng:
+              106.809167,
+          },
+
+          {
+            address:
+              extraPayload.drop_address,
+
+            name:
+              extraPayload.drop_name,
+
+            mobile:
+              extraPayload.drop_mobile,
+
+            cod:
+              codAmount,
+
+            lat:
+              extraPayload.lat,
+
+            lng:
+              extraPayload.lng,
+          },
+        ],
+
+        /*
+        =====================================
+        QUAN TRỌNG NHẤT
+        =====================================
+        */
+
+        services: [
+          {
+            _id:
+              extraPayload.service_id ||
+              'SGN-BIKE',
+
+            requests: [],
+          },
+        ],
+
+        payment_method:
+          extraPayload.payment_method ||
+          'CASH',
+
+        remarks:
+          extraPayload.remarks || '',
+
+        items,
+      };
+
+      /*
+      =====================================
+      AUTH
+      =====================================
+      */
+
+      const headers =
+        await this.getAhamoveAuthHeaders();
+
+      /*
+      =====================================
+      URL
+      =====================================
+      */
+
+      const url =
+        this.ahamoveUrl(
+          '/v3/orders/estimates',
+        );
+
+      console.log(
+        '===== AHAMOVE ESTIMATE =====',
+      );
+
+      console.log(
+        JSON.stringify(
+          payload,
+          null,
+          2,
+        ),
+      );
+
+      /*
+      =====================================
+      API CALL
+      =====================================
+      */
+
+      const response =
+        await axios.post(
+          url,
+          payload,
+          { headers },
+        );
+
+      console.log(
+        '===== ESTIMATE SUCCESS =====',
+      );
+
+      console.log(
+        JSON.stringify(
+          response.data,
+          null,
+          2,
+        ),
+      );
+
+      return {
+        success: true,
+        estimate_payload: payload,
+        estimate_result: response.data,
+      };
+
+    } catch (error: any) {
+
+      console.log(
+        '===== ESTIMATE ERROR =====',
+      );
+
+      console.log(
+        JSON.stringify(
+          error.response?.data ||
+          error.message,
+          null,
+          2,
+        ),
+      );
+
+      throw this.mapAhamoveError(
+        error,
+      );
+    }
+  }
+
+  // Service của giao hàng nhanh 
   async create(dto: CreateShippingDto): Promise<Shipping> {
     const newShipping = this.shippingRepo.create(dto);
     return await this.shippingRepo.save(newShipping);
@@ -107,7 +1170,7 @@ export class ShippingService {
         token: data.accessToken,
         businessId: data.businessId,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.log('NHANH TOKEN ERROR:');
       console.log(error.response?.data || error.message);
       throw error;
@@ -171,7 +1234,7 @@ export class ShippingService {
       );
 
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.log('===== NHANH LOCATION ERROR =====');
       console.log('status =', error.response?.status);
       console.log('data =', error.response?.data || error.message);
@@ -210,7 +1273,7 @@ export class ShippingService {
       );
 
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.log('===== NHANH DEPOT ERROR =====');
       console.log('status =', error.response?.status);
       console.log('data =', error.response?.data || error.message);
@@ -246,7 +1309,7 @@ export class ShippingService {
       );
 
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.log('===== NHANH FEE ERROR =====');
       console.log('status =', error.response?.status);
       console.log('data =', error.response?.data || error.message);
@@ -292,8 +1355,8 @@ export class ShippingService {
       }
 
       // Nếu code = 1 (Thành công), trả về cục data chứa orderId và trackingUrl
-      return responseData.data; 
-    } catch (error) {
+      return responseData.data;
+    } catch (error: any) {
       console.log('===== NHANH CREATE ORDER ERROR =====');
       console.log(error.message);
       throw error; // Ném lỗi văng ra ngoài để Controller xử lý
@@ -330,7 +1393,7 @@ export class ShippingService {
 
       // Xử lý logic khi Nhanh.vn báo code = 0
       if (responseData.code === 0) {
-        
+
         // 1. Nếu đơn giản là "Không có đơn hàng", trả về mảng rỗng cho frontend
         if (responseData.messages && responseData.messages.includes('No records')) {
           console.log('[Nhanh.vn] Không có đơn hàng nào trong khoảng thời gian này.');
@@ -349,15 +1412,15 @@ export class ShippingService {
 
       // Trả về danh sách đơn hàng bình thường nếu có dữ liệu
       return responseData.data;
-    } catch (error) {
+    } catch (error: any) {
       console.log('===== NHANH GET ORDERS CATCH ERROR =====');
       console.log(error.message);
-      
+
       // Giữ nguyên lỗi 400 nếu mình chủ động ném ra ở trên
       if (error instanceof BadRequestException) {
         throw error;
       }
-      
+
       throw new BadRequestException(error.response?.data || error.message);
     }
   }
@@ -396,22 +1459,22 @@ export class ShippingService {
 
       // Trả về data (chứa orderId và status mới)
       return responseData.data;
-    } catch (error) {
+    } catch (error: any) {
       console.log('===== NHANH UPDATE ORDER CATCH ERROR =====');
       console.log(error.message);
-      
+
       if (error instanceof BadRequestException) {
         throw error;
       }
-      
+
       throw new BadRequestException(error.response?.data || error.message);
     }
   }
 
   async processCheckoutShipping(
-    orderId: string, 
-    providerId: string, 
-    serviceId: string, 
+    orderId: string,
+    providerId: string,
+    serviceId: string,
     nhanhPayload: any
   ) {
     // 1. Validate xem Provider và Service có tồn tại trong DB nội bộ không
@@ -433,7 +1496,7 @@ export class ShippingService {
       provider_id: provider.id,
       service_id: service.id,
       ship_fee: nhanhResult.shipFee || 0,
-      cod_amount: nhanhPayload.codMoney || 0, 
+      cod_amount: nhanhPayload.codMoney || 0,
       status: 'ReadyToPick', // Trạng thái mặc định khi vừa book xong
       // Lưu lại 2 trường tracking nếu ông đã tạo trong entity
       // nhanh_id: String(nhanhResult.orderId), 
@@ -443,7 +1506,7 @@ export class ShippingService {
     // 4. Lưu thành công và trả về cho Frontend
     return await this.shippingRepo.save(newShipping);
   }
-  
+
   /*
   =====================================================
   XỬ LÝ WEBHOOK TỪ NHANH.VN BÁO VỀ (TỰ ĐỘNG CẬP NHẬT TRẠNG THÁI)
@@ -473,16 +1536,16 @@ export class ShippingService {
     // 2. Map trạng thái của Nhanh.vn sang trạng thái nội bộ
     let localStatus = shippingRecord.status;
     switch (nhanhStatus) {
-      case 'Pickup': 
-        localStatus = 'Delivering'; 
+      case 'Pickup':
+        localStatus = 'Delivering';
         break;
-      case 'Success': 
-        localStatus = 'Delivered'; 
+      case 'Success':
+        localStatus = 'Delivered';
         break;
-      case 'Returned': 
+      case 'Returned':
         localStatus = 'Returned';
         break;
-      case 'Canceled': 
+      case 'Canceled':
       case 'Aborted':
         localStatus = 'Canceled';
         break;
@@ -490,10 +1553,10 @@ export class ShippingService {
 
     // 3. Cập nhật DB
     shippingRecord.status = localStatus;
-    shippingRecord.update_at = new Date(); 
-    
+    shippingRecord.update_at = new Date();
+
     await this.shippingRepo.save(shippingRecord);
-    
+
     console.log(`[Webhook] Đã tự động cập nhật đơn ${shippingRecord.id} -> ${localStatus}`);
     return { success: true };
   }
@@ -562,8 +1625,8 @@ export class ShippingService {
       order_id: body.id,
       status: 'ReadyToPick',
       ship_fee: nhanhResult.shipFee || 0,
-      cod_amount: body.moneyTransfer === 0 
-        ? body.productList.reduce((sum: number, p: any) => sum + p.price * p.quantity, 0) 
+      cod_amount: body.moneyTransfer === 0
+        ? body.productList.reduce((sum: number, p: any) => sum + p.price * p.quantity, 0)
         : 0,
       nhanh_id: String(nhanhResult.orderId),
       tracking_url: nhanhResult.trackingUrl,
@@ -580,10 +1643,10 @@ export class ShippingService {
   }
 
   async updateStatusFromWebhook(orderId: string, status: string) {
-  return await this.shippingRepo.update(
-    { nhanh_id: String(orderId) },
-    { status: status }
-  );
-}
+    return await this.shippingRepo.update(
+      { nhanh_id: String(orderId) },
+      { status: status }
+    );
+  }
 
 }
