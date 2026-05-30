@@ -189,10 +189,13 @@ export class ShippingController {
   @ApiBody({
     schema: {
       example: {
-
-        orderId: 'ORDER_001',
-
         extraPayload: {
+
+          cart_item_ids: [
+            "1",
+            "2",
+            "3",
+          ],
 
           service_id: 'SGN-BIKE',
 
@@ -204,6 +207,12 @@ export class ShippingController {
 
           drop_mobile:
             '0912345678',
+
+          payment_method:
+            'CASH',
+
+          remarks:
+            'Giao cẩn thận',
         },
       },
     },
@@ -213,13 +222,11 @@ export class ShippingController {
   ) {
 
     const {
-      orderId,
       extraPayload,
     } = body;
 
     return this.shippingService
       .estimateAhamoveFee(
-        orderId,
         extraPayload,
       );
   }

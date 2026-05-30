@@ -7,6 +7,7 @@ import { Shipping } from './entities/shipping.entity';
 import { NhanhConfig } from './entities/nhanh-config.entity';
 import { Order } from '../orders/entities/order.entity';
 import { OrderDetail } from '../order_details/entities/order_detail.entity';
+import { CartItem } from '../cart_items/entities/cart_item.entity';
 import { CreateShippingDto } from './dto/create-shipping.dto';
 import { UpdateShippingDto } from './dto/update-shipping.dto';
 import { ShippingProvidersService } from '../shipping_providers/shipping_providers.service';
@@ -30,6 +31,9 @@ export class ShippingService {
 
     @InjectRepository(OrderDetail)
     private orderDetailRepo: Repository<OrderDetail>,
+
+    @InjectRepository(CartItem)
+    private cartItemRepo: Repository<CartItem>,
   ) { }
 
   /*
@@ -792,7 +796,7 @@ export class ShippingService {
 
         console.log('[STEP 6] AHAMOVE RESPONSE SUCCESS:');
         console.log(JSON.stringify(ahamoveResult, null, 2));
-      } catch (err) {
+      } catch (err :any) {
         console.log('[STEP 6] AHAMOVE ERROR:');
         console.log(err?.response?.data || err.message || err);
 
@@ -840,7 +844,7 @@ export class ShippingService {
         ahamove_order: ahamoveResult,
         shipping: savedShipping,
       };
-    } catch (error) {
+    } catch (error :any) {
       console.log('==============================');
       console.log('[AHAMOVE CHECKOUT ERROR]');
       console.log(error?.response?.data || error.message || error);
@@ -851,7 +855,6 @@ export class ShippingService {
   }
 
   async estimateAhamoveFee(
-    orderId: string,
     extraPayload: any,
   ) {
 
@@ -865,22 +868,45 @@ export class ShippingService {
 
       /*
       =====================================
-      GET ORDER
+      VALIDATE
       =====================================
       */
 
-      const order =
-        await this.orderRepo.findOne({
-          where: { id: orderId },
-          relations: [
-            'orderDetails',
-            'orderDetails.variant',
-          ],
-        });
-
-      if (!order) {
+      if (
+        !extraPayload.cart_item_ids ||
+        !Array.isArray(extraPayload.cart_item_ids) ||
+        !extraPayload.cart_item_ids.length
+      ) {
         throw new BadRequestException(
-          `Order ${orderId} không tồn tại`,
+          'cart_item_ids is required',
+        );
+      }
+
+      /*
+      =====================================
+      GET CART ITEMS
+      =====================================
+      */
+
+      const cartItems =
+        await this.cartItemRepo
+          .createQueryBuilder('cartItem')
+          .leftJoinAndSelect(
+            'cartItem.variant',
+            'variant',
+          )
+          .where(
+            'cartItem.id IN (:...ids)',
+            {
+              ids:
+                extraPayload.cart_item_ids,
+            },
+          )
+          .getMany();
+
+      if (!cartItems.length) {
+        throw new BadRequestException(
+          'Không tìm thấy cart items',
         );
       }
 
@@ -891,21 +917,25 @@ export class ShippingService {
       */
 
       const items =
-        order.orderDetails.map(
-          (detail: any, index: number) => ({
-
+        cartItems.map(
+          (
+            item: any,
+            index: number,
+          ) => ({
             _id:
               String(index + 1),
 
             name:
-              detail.variant?.name ||
+              item.variant?.name ||
               'Product',
 
             price:
-              Number(detail.price),
+              Number(
+                item.variant?.price || 0,
+              ),
 
             num:
-              Number(detail.quantity),
+              Number(item.quantity),
           }),
         );
 
@@ -916,13 +946,15 @@ export class ShippingService {
       */
 
       const codAmount =
-        order.orderDetails.reduce(
+        cartItems.reduce(
           (
             total: number,
             item: any,
           ) =>
             total +
-            Number(item.price) *
+            Number(
+              item.variant?.price || 0,
+            ) *
             Number(item.quantity),
 
           0,
@@ -930,7 +962,7 @@ export class ShippingService {
 
       /*
       =====================================
-      ESTIMATE PAYLOAD
+      AHAMOVE PAYLOAD
       =====================================
       */
 
@@ -944,15 +976,11 @@ export class ShippingService {
             address:
               PICK_ADDRESS,
 
-            name:
-              'TrueLook Store',
-
             mobile:
               PICK_MOBILE,
 
-            /*
-            NÊN CÓ LAT LNG
-            */
+            name:
+              'TrueLook Store',
 
             lat:
               10.841667,
@@ -965,11 +993,11 @@ export class ShippingService {
             address:
               extraPayload.drop_address,
 
-            name:
-              extraPayload.drop_name,
-
             mobile:
               extraPayload.drop_mobile,
+
+            name:
+              extraPayload.drop_name,
 
             cod:
               codAmount,
@@ -981,12 +1009,6 @@ export class ShippingService {
               extraPayload.lng,
           },
         ],
-
-        /*
-        =====================================
-        QUAN TRỌNG NHẤT
-        =====================================
-        */
 
         services: [
           {
@@ -1017,12 +1039,6 @@ export class ShippingService {
       const headers =
         await this.getAhamoveAuthHeaders();
 
-      /*
-      =====================================
-      URL
-      =====================================
-      */
-
       const url =
         this.ahamoveUrl(
           '/v3/orders/estimates',
@@ -1042,7 +1058,7 @@ export class ShippingService {
 
       /*
       =====================================
-      API CALL
+      CALL API
       =====================================
       */
 
@@ -1050,7 +1066,9 @@ export class ShippingService {
         await axios.post(
           url,
           payload,
-          { headers },
+          {
+            headers,
+          },
         );
 
       console.log(
@@ -1066,9 +1084,19 @@ export class ShippingService {
       );
 
       return {
+
         success: true,
-        estimate_payload: payload,
-        estimate_result: response.data,
+
+        total_cod:
+          codAmount,
+
+        items,
+
+        estimate_payload:
+          payload,
+
+        estimate_result:
+          response.data,
       };
 
     } catch (error: any) {
