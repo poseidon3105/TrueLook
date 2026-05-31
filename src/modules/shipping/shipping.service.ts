@@ -821,6 +821,7 @@ export class ShippingService {
         ship_fee: ahamoveResult?.price || 0,
         cod_amount: codAmount,
         ahamove_id: String(ahamoveResult?.order_id || ''),
+        nhanh_id: String(ahamoveResult?.order_id || ''),
         tracking_url: ahamoveResult?.shared_link,
         create_at: new Date(),
         update_at: new Date(),
