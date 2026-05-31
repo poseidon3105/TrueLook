@@ -332,21 +332,35 @@ export class ShippingService {
     }
   }
 
-  async getAhamoveOrders(payload: any) {
-    try {
-      const headers = await this.getAhamoveAuthHeaders();
-      const url = this.ahamoveUrl('/v3/orders/query');
-      console.log('[Ahamove] get-orders url=', url, 'payload=', JSON.stringify(payload));
-      const response = await axios.post(url, payload, { headers });
+  async getAhamoveOrders() {
+  try {
 
-      return response.data;
-    } catch (error: any) {
-      console.log('===== AHAMOVE GET ORDERS ERROR =====');
-      console.log(error.response?.data || error.message);
-      throw error;
-    }
+    const shippings =
+      await this.shippingRepo.find({
+        order: {
+          create_at: 'DESC',
+        },
+      });
+
+    return {
+      success: true,
+      total: shippings.length,
+      data: shippings,
+    };
+
+  } catch (error: any) {
+
+    console.log(
+      '===== GET SHIPPING LIST ERROR =====',
+    );
+
+    console.log(
+      error.message,
+    );
+
+    throw error;
   }
-
+}
   async updateAhamoveOrder(payload: any) {
     try {
       if (!payload?.order_id) {
@@ -796,7 +810,7 @@ export class ShippingService {
 
         console.log('[STEP 6] AHAMOVE RESPONSE SUCCESS:');
         console.log(JSON.stringify(ahamoveResult, null, 2));
-      } catch (err :any) {
+      } catch (err: any) {
         console.log('[STEP 6] AHAMOVE ERROR:');
         console.log(err?.response?.data || err.message || err);
 
@@ -845,7 +859,7 @@ export class ShippingService {
         ahamove_order: ahamoveResult,
         shipping: savedShipping,
       };
-    } catch (error :any) {
+    } catch (error: any) {
       console.log('==============================');
       console.log('[AHAMOVE CHECKOUT ERROR]');
       console.log(error?.response?.data || error.message || error);
