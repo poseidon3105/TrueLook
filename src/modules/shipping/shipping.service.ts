@@ -333,34 +333,34 @@ export class ShippingService {
   }
 
   async getAhamoveOrders() {
-  try {
+    try {
 
-    const shippings =
-      await this.shippingRepo.find({
-        order: {
-          create_at: 'DESC',
-        },
-      });
+      const shippings =
+        await this.shippingRepo.find({
+          order: {
+            create_at: 'DESC',
+          },
+        });
 
-    return {
-      success: true,
-      total: shippings.length,
-      data: shippings,
-    };
+      return {
+        success: true,
+        total: shippings.length,
+        data: shippings,
+      };
 
-  } catch (error: any) {
+    } catch (error: any) {
 
-    console.log(
-      '===== GET SHIPPING LIST ERROR =====',
-    );
+      console.log(
+        '===== GET SHIPPING LIST ERROR =====',
+      );
 
-    console.log(
-      error.message,
-    );
+      console.log(
+        error.message,
+      );
 
-    throw error;
+      throw error;
+    }
   }
-}
   async updateAhamoveOrder(payload: any) {
     try {
       if (!payload?.order_id) {
@@ -872,7 +872,6 @@ export class ShippingService {
   async estimateAhamoveFee(
     extraPayload: any,
   ) {
-
     const PICK_ADDRESS =
       'Tòa Bs16, 88 Phước Thiện, Khu phố 29, Long Bình, Hồ Chí Minh 71300, Việt Nam';
 
@@ -880,22 +879,93 @@ export class ShippingService {
       '0822030768';
 
     try {
-
       /*
       =====================================
-      VALIDATE
+      VALIDATE INPUT
       =====================================
       */
 
       if (
         !extraPayload.cart_item_ids ||
-        !Array.isArray(extraPayload.cart_item_ids) ||
+        !Array.isArray(
+          extraPayload.cart_item_ids,
+        ) ||
         !extraPayload.cart_item_ids.length
       ) {
         throw new BadRequestException(
           'cart_item_ids is required',
         );
       }
+
+      if (
+        !extraPayload.drop_address
+      ) {
+        throw new BadRequestException(
+          'drop_address is required',
+        );
+      }
+
+      if (
+        !extraPayload.drop_mobile
+      ) {
+        throw new BadRequestException(
+          'drop_mobile is required',
+        );
+      }
+
+      if (
+        !/^0\d{9}$/.test(
+          extraPayload.drop_mobile,
+        )
+      ) {
+        throw new BadRequestException(
+          'Số điện thoại không hợp lệ',
+        );
+      }
+
+      /*
+      =====================================
+      VALIDATE ADDRESS
+      =====================================
+      */
+
+      const geoResponse =
+        await axios.get(
+          'https://nominatim.openstreetmap.org/search',
+          {
+            params: {
+              q:
+                extraPayload.drop_address,
+              format: 'json',
+              limit: 1,
+              countrycodes: 'vn',
+            },
+            headers: {
+              'User-Agent':
+                'TrueLook/1.0',
+            },
+          },
+        );
+
+      const geoResult =
+        geoResponse.data?.[0];
+
+      if (!geoResult) {
+        throw new BadRequestException(
+          'Địa chỉ không hợp lệ',
+        );
+      }
+
+      const dropLat = Number(
+        geoResult.lat,
+      );
+
+      const dropLng = Number(
+        geoResult.lon,
+      );
+
+      const dropAddress =
+        geoResult.display_name;
 
       /*
       =====================================
@@ -905,7 +975,9 @@ export class ShippingService {
 
       const cartItems =
         await this.cartItemRepo
-          .createQueryBuilder('cartItem')
+          .createQueryBuilder(
+            'cartItem',
+          )
           .leftJoinAndSelect(
             'cartItem.variant',
             'variant',
@@ -937,26 +1009,26 @@ export class ShippingService {
             item: any,
             index: number,
           ) => ({
-            _id:
-              String(index + 1),
+            _id: String(index + 1),
 
             name:
               item.variant?.name ||
               'Product',
 
-            price:
-              Number(
-                item.variant?.price || 0,
-              ),
+            price: Number(
+              item.variant?.price ||
+              0,
+            ),
 
-            num:
-              Number(item.quantity),
+            num: Number(
+              item.quantity,
+            ),
           }),
         );
 
       /*
       =====================================
-      COD
+      CALCULATE COD
       =====================================
       */
 
@@ -968,9 +1040,12 @@ export class ShippingService {
           ) =>
             total +
             Number(
-              item.variant?.price || 0,
+              item.variant?.price ||
+              0,
             ) *
-            Number(item.quantity),
+            Number(
+              item.quantity,
+            ),
 
           0,
         );
@@ -982,11 +1057,9 @@ export class ShippingService {
       */
 
       const payload = {
-
         order_time: 0,
 
         path: [
-
           {
             address:
               PICK_ADDRESS,
@@ -1006,7 +1079,7 @@ export class ShippingService {
 
           {
             address:
-              extraPayload.drop_address,
+              dropAddress,
 
             mobile:
               extraPayload.drop_mobile,
@@ -1017,11 +1090,9 @@ export class ShippingService {
             cod:
               codAmount,
 
-            lat:
-              extraPayload.lat,
+            lat: dropLat,
 
-            lng:
-              extraPayload.lng,
+            lng: dropLng,
           },
         ],
 
@@ -1040,7 +1111,8 @@ export class ShippingService {
           'CASH',
 
         remarks:
-          extraPayload.remarks || '',
+          extraPayload.remarks ||
+          '',
 
         items,
       };
@@ -1073,7 +1145,7 @@ export class ShippingService {
 
       /*
       =====================================
-      CALL API
+      CALL AHAMOVE
       =====================================
       */
 
@@ -1099,23 +1171,30 @@ export class ShippingService {
       );
 
       return {
-
         success: true,
 
         total_cod:
           codAmount,
 
-        items,
+        shipping_fee:
+          response.data
+            ?.total_price ??
+          null,
 
-        estimate_payload:
-          payload,
+        pickup_address:
+          PICK_ADDRESS,
+
+        drop_address:
+          dropAddress,
+
+        lat: dropLat,
+
+        lng: dropLng,
 
         estimate_result:
           response.data,
       };
-
     } catch (error: any) {
-
       console.log(
         '===== ESTIMATE ERROR =====',
       );
@@ -1135,6 +1214,35 @@ export class ShippingService {
     }
   }
 
+  async autocompleteAddress(
+    extraPayload: any,
+  ) {
+    if (!extraPayload?.text) {
+      throw new BadRequestException(
+        'text is required',
+      );
+    }
+
+    const response =
+      await axios.get(
+        'https://maps.vietmap.vn/api/autocomplete/v4',
+        {
+          params: {
+            apikey:
+              process.env.VIETMAP_API_KEY,
+            text:
+              extraPayload.text,
+            display_type: 5,
+          },
+        },
+      );
+
+    return {
+      success: true,
+      results:
+        response.data,
+    };
+  }
   // Service của giao hàng nhanh 
   async create(dto: CreateShippingDto): Promise<Shipping> {
     const newShipping = this.shippingRepo.create(dto);
