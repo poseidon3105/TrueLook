@@ -184,6 +184,32 @@ export class ShippingController {
       );
   }
 
+  @Post('address/autocomplete')
+  @ApiOperation({
+    summary:
+      'Tìm kiếm địa chỉ bằng VietMap',
+  })
+  @ApiBody({
+    schema: {
+      example: {
+        extraPayload: {
+          text: '88 Phước Thiện',
+        },
+      },
+    },
+  })
+  async autocompleteAddress(
+    @Body() body: any,
+  ) {
+    const { extraPayload } =
+      body;
+
+    return this.shippingService
+      .autocompleteAddress(
+        extraPayload,
+      );
+  }
+
   @Post('ahamove/estimate-fee')
   @ApiOperation({
     summary: 'Estimate phí vận chuyển Ahamove',
