@@ -24,12 +24,10 @@ export class CreateAddressDto {
   city: string;
 
   @ApiProperty({ example: 'Quận 1', description: 'Quận/Huyện' })
-  @IsNotEmpty({ message: 'Quận/Huyện không được để trống' })
   @IsString()
   district: string;
 
   @ApiProperty({ example: 'Phường Bến Nghé', description: 'Phường/Xã' })
-  @IsNotEmpty({ message: 'Phường/Xã không được để trống' })
   @IsString()
   ward: string;
 
