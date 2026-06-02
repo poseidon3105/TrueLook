@@ -879,6 +879,7 @@ export class ShippingService {
       '0822030768';
 
     try {
+
       /*
       =====================================
       VALIDATE INPUT
@@ -897,19 +898,21 @@ export class ShippingService {
         );
       }
 
-      if (
-        !extraPayload.drop_address
-      ) {
+      if (!extraPayload.ref_id) {
         throw new BadRequestException(
-          'drop_address is required',
+          'ref_id is required',
         );
       }
 
-      if (
-        !extraPayload.drop_mobile
-      ) {
+      if (!extraPayload.drop_mobile) {
         throw new BadRequestException(
           'drop_mobile is required',
+        );
+      }
+
+      if (!extraPayload.drop_name) {
+        throw new BadRequestException(
+          'drop_name is required',
         );
       }
 
@@ -925,47 +928,43 @@ export class ShippingService {
 
       /*
       =====================================
-      VALIDATE ADDRESS
+      GET ADDRESS FROM VIETMAP
       =====================================
       */
 
-      const geoResponse =
+      const placeResponse =
         await axios.get(
-          'https://nominatim.openstreetmap.org/search',
+          'https://maps.vietmap.vn/api/place/v3',
           {
             params: {
-              q:
-                extraPayload.drop_address,
-              format: 'json',
-              limit: 1,
-              countrycodes: 'vn',
-            },
-            headers: {
-              'User-Agent':
-                'TrueLook/1.0',
+              apikey:
+                process.env.VIETMAP_API_KEY,
+              refid:
+                extraPayload.ref_id,
             },
           },
         );
 
-      const geoResult =
-        geoResponse.data?.[0];
+      const place =
+        placeResponse.data;
 
-      if (!geoResult) {
+      if (!place) {
         throw new BadRequestException(
-          'Địa chỉ không hợp lệ',
+          'Không tìm thấy địa chỉ từ ref_id',
         );
       }
 
+      const dropAddress =
+        place.display ||
+        place.address;
+
       const dropLat = Number(
-        geoResult.lat,
+        place.lat,
       );
 
       const dropLng = Number(
-        geoResult.lon,
+        place.lng,
       );
-
-      const dropAddress =
-        geoResult.display_name;
 
       /*
       =====================================
@@ -1003,32 +1002,27 @@ export class ShippingService {
       =====================================
       */
 
-      const items =
-        cartItems.map(
-          (
-            item: any,
-            index: number,
-          ) => ({
-            _id: String(index + 1),
+      const items = cartItems.map(
+        (item: any, index: number) => ({
+          _id: String(index + 1),
 
-            name:
-              item.variant?.name ||
-              'Product',
+          name:
+            item.variant?.name ||
+            'Product',
 
-            price: Number(
-              item.variant?.price ||
-              0,
-            ),
+          price: Number(
+            item.variant?.price || 0,
+          ),
 
-            num: Number(
-              item.quantity,
-            ),
-          }),
-        );
+          num: Number(
+            item.quantity,
+          ),
+        }),
+      );
 
       /*
       =====================================
-      CALCULATE COD
+      COD
       =====================================
       */
 
@@ -1040,19 +1034,17 @@ export class ShippingService {
           ) =>
             total +
             Number(
-              item.variant?.price ||
-              0,
+              item.variant?.price || 0,
             ) *
             Number(
               item.quantity,
             ),
-
           0,
         );
 
       /*
       =====================================
-      AHAMOVE PAYLOAD
+      BUILD AHAMOVE PAYLOAD
       =====================================
       */
 
@@ -1071,10 +1063,10 @@ export class ShippingService {
               'TrueLook Store',
 
             lat:
-              10.841667,
+              10.847706,
 
             lng:
-              106.809167,
+              106.83636,
           },
 
           {
@@ -1090,9 +1082,11 @@ export class ShippingService {
             cod:
               codAmount,
 
-            lat: dropLat,
+            lat:
+              dropLat,
 
-            lng: dropLng,
+            lng:
+              dropLng,
           },
         ],
 
@@ -1119,7 +1113,7 @@ export class ShippingService {
 
       /*
       =====================================
-      AUTH
+      CALL AHAMOVE
       =====================================
       */
 
@@ -1143,12 +1137,6 @@ export class ShippingService {
         ),
       );
 
-      /*
-      =====================================
-      CALL AHAMOVE
-      =====================================
-      */
-
       const response =
         await axios.post(
           url,
@@ -1158,18 +1146,6 @@ export class ShippingService {
           },
         );
 
-      console.log(
-        '===== ESTIMATE SUCCESS =====',
-      );
-
-      console.log(
-        JSON.stringify(
-          response.data,
-          null,
-          2,
-        ),
-      );
-
       return {
         success: true,
 
@@ -1177,24 +1153,27 @@ export class ShippingService {
           codAmount,
 
         shipping_fee:
-          response.data
-            ?.total_price ??
-          null,
-
-        pickup_address:
-          PICK_ADDRESS,
+          response.data?.total_price ??
+          response.data?.price ??
+          response.data?.fee ??
+          0,
 
         drop_address:
           dropAddress,
 
-        lat: dropLat,
+        lat:
+          dropLat,
 
-        lng: dropLng,
+        lng:
+          dropLng,
+
+        items,
 
         estimate_result:
           response.data,
       };
     } catch (error: any) {
+
       console.log(
         '===== ESTIMATE ERROR =====',
       );
