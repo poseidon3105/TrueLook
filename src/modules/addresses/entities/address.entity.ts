@@ -40,6 +40,13 @@ export class Address {
   @Column({ type: 'varchar' })
   role: string;
 
+  @Column({
+    nullable: true,
+    type: 'varchar',
+    length: 500,
+  })
+  ref_id: string;
+
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
   user: User;
