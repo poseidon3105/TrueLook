@@ -218,17 +218,16 @@ export class ShippingController {
     schema: {
       example: {
         extraPayload: {
-
           cart_item_ids: [
-            "1",
-            "2",
-            "3",
+            '1',
+            '2',
+            '3',
           ],
 
           service_id: 'SGN-BIKE',
 
-          drop_address:
-            '475A Điện Biên Phủ, Bình Thạnh, Hồ Chí Minh',
+          ref_id:
+            'auto:RApFCSImcWBoNWFYdmtxAHYnbCBQBidpBAJcdl0OXghF2YzGQkQACFJQGwIdVQJWCxgHAwVTHVJVD1kcAQZLClYAXgBcDwVRAlQFA1ZZc1NBFVc',
 
           drop_name:
             'Nguyễn Văn A',
@@ -248,14 +247,9 @@ export class ShippingController {
   async estimateAhamoveFee(
     @Body() body: any,
   ) {
-
-    const {
-      extraPayload,
-    } = body;
-
     return this.shippingService
       .estimateAhamoveFee(
-        extraPayload,
+        body.extraPayload,
       );
   }
 
