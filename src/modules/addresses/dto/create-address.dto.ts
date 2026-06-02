@@ -55,4 +55,7 @@ export class CreateAddressDto {
   @IsNotEmpty({ message: 'Loại địa chỉ (role) không được để trống' })
   @IsString()
   role: string;
+
+  @IsString()
+  ref_id?: string;
 }

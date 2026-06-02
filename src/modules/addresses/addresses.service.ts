@@ -10,14 +10,22 @@ export class AddressesService {
   constructor(
     @InjectRepository(Address)
     private readonly addressesRepository: Repository<Address>,
-  ) {}
+  ) { }
 
-  async create(userId: string, dto: CreateAddressDto) {
-    const newAddress = this.addressesRepository.create({
-      ...dto,
-      user_id: userId,
-    });
-    return this.addressesRepository.save(newAddress);
+  async create(
+    userId: string,
+    dto: CreateAddressDto,
+  ) {
+    const newAddress =
+      this.addressesRepository.create({
+        ...dto,
+        user_id: userId,
+        ref_id: dto.ref_id ,
+      });
+
+    return this.addressesRepository.save(
+      newAddress,
+    );
   }
 
   async findAll(userId: string) {
@@ -26,17 +34,30 @@ export class AddressesService {
     });
   }
 
-  async update(userId: string, addressId: string, dto: UpdateAddressDto) {
-    const address = await this.addressesRepository.findOne({
-      where: { id: addressId, user_id: userId },
-    });
+  async update(
+    userId: string,
+    addressId: string,
+    dto: UpdateAddressDto,
+  ) {
+    const address =
+      await this.addressesRepository.findOne({
+        where: {
+          id: addressId,
+          user_id: userId,
+        },
+      });
 
     if (!address) {
-      throw new NotFoundException('Không tìm thấy địa chỉ này!');
+      throw new NotFoundException(
+        'Không tìm thấy địa chỉ này!',
+      );
     }
 
     Object.assign(address, dto);
-    return this.addressesRepository.save(address);
+
+    return this.addressesRepository.save(
+      address,
+    );
   }
 
   async remove(userId: string, addressId: string) {
