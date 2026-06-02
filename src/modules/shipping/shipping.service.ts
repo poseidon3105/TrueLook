@@ -1003,7 +1003,10 @@ export class ShippingService {
       */
 
       const items = cartItems.map(
-        (item: any, index: number) => ({
+        (
+          item: any,
+          index: number,
+        ) => ({
           _id: String(index + 1),
 
           name:
@@ -1019,28 +1022,6 @@ export class ShippingService {
           ),
         }),
       );
-
-      /*
-      =====================================
-      COD
-      =====================================
-      */
-
-      const codAmount =
-        cartItems.reduce(
-          (
-            total: number,
-            item: any,
-          ) =>
-            total +
-            Number(
-              item.variant?.price || 0,
-            ) *
-            Number(
-              item.quantity,
-            ),
-          0,
-        );
 
       /*
       =====================================
@@ -1078,9 +1059,6 @@ export class ShippingService {
 
             name:
               extraPayload.drop_name,
-
-            cod:
-              codAmount,
 
             lat:
               dropLat,
@@ -1146,17 +1124,26 @@ export class ShippingService {
           },
         );
 
+      const estimateData =
+        response.data?.[0]?.data;
+
+      if (!estimateData) {
+        throw new BadRequestException(
+          'Không lấy được phí vận chuyển',
+        );
+      }
+
       return {
         success: true,
 
-        total_cod:
-          codAmount,
-
         shipping_fee:
-          response.data?.total_price ??
-          response.data?.price ??
-          response.data?.fee ??
-          0,
+          estimateData.total_price || 0,
+
+        distance:
+          estimateData.distance || 0,
+
+        duration:
+          estimateData.duration || 0,
 
         drop_address:
           dropAddress,
