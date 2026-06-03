@@ -497,138 +497,79 @@ export class ShippingService {
     }
   }
 
-  async handleAhamoveWebhook(payload: any) {
-    try {
+  async handleAhamoveWebhook(
+    payload: any,
+  ) {
+    console.log(
+      'Webhook order:',
+      payload._id,
+    );
+
+    const shipping =
+      await this.shippingRepo.findOne({
+        where: {
+          nhanh_id: payload._id,
+        },
+      });
+
+    console.log(
+      'Shipping found:',
+      shipping,
+    );
+
+    if (!shipping) {
       console.log(
-        '===== AHAMOVE WEBHOOK =====',
+        'Không tìm thấy shipping',
       );
-
-      console.log(
-        JSON.stringify(payload, null, 2),
-      );
-
-      const order =
-        payload?.order ||
-        payload?.data ||
-        payload;
-
-      const orderId =
-        order?._id ||
-        order?.id ||
-        order?.order_id;
-
-      const rawStatus =
-        order?.status;
-
-      if (!orderId || !rawStatus) {
-        return {
-          success: false,
-          message:
-            'Missing orderId/status',
-        };
-      }
-
-      const shippingRecord =
-        await this.shippingRepo.findOne({
-          where: {
-            ahamove_id:
-              String(orderId),
-          } as any,
-        });
-
-      if (!shippingRecord) {
-        console.log(
-          '[Webhook] shipping not found:',
-          orderId,
-        );
-
-        return {
-          success: true,
-        };
-      }
-
-      const status =
-        String(rawStatus)
-          .trim()
-          .toUpperCase();
-
-      let localStatus =
-        shippingRecord.status;
-
-      switch (status) {
-        case 'ASSIGNING':
-          localStatus = 'Pending';
-          break;
-
-        case 'ACCEPTED':
-          localStatus =
-            'ReadyToPick';
-          break;
-
-        case 'PICKING':
-          localStatus = 'Picking';
-          break;
-
-        case 'DELIVERING':
-        case 'ON_GOING':
-          localStatus =
-            'Delivering';
-          break;
-
-        case 'COMPLETED':
-        case 'DELIVERED':
-          localStatus =
-            'Delivered';
-          break;
-
-        case 'CANCELED':
-        case 'CANCELLED':
-        case 'FAILED':
-          localStatus =
-            'Canceled';
-          break;
-      }
-
-      if (
-        shippingRecord.status ===
-        localStatus
-      ) {
-        return {
-          success: true,
-          message:
-            'Status unchanged',
-        };
-      }
-
-      shippingRecord.status =
-        localStatus;
-
-      shippingRecord.update_at =
-        new Date();
-
-      await this.shippingRepo.save(
-        shippingRecord,
-      );
-
-      console.log(
-        `[Webhook] ${orderId} -> ${localStatus}`,
-      );
-
-      return {
-        success: true,
-      };
-    } catch (error: any) {
-      console.log(
-        '===== WEBHOOK ERROR =====',
-      );
-
-      console.log(error.message);
-
       return {
         success: false,
-        message: error.message,
       };
     }
+
+    shipping.status =
+      payload.status;
+
+    await this.shippingRepo.save(
+      shipping,
+    );
+
+    console.log(
+      'Shipping updated:',
+      payload.status,
+    );
+
+    if (
+      payload.status ===
+      'COMPLETED'
+    ) {
+      await this.orderRepo.update(
+        {
+          id: shipping.order_id,
+        },
+        {
+          status: 'DELIVERED',
+        },
+      );
+    }
+
+    if (
+      payload.status ===
+      'CANCELLED'
+    ) {
+      await this.orderRepo.update(
+        {
+          id: shipping.order_id,
+        },
+        {
+          status:
+            'SHIPPING_FAILED',
+        },
+      );
+    }
+
+    return {
+      success: true,
+    };
   }
 
   async processAhamoveCheckout(
@@ -832,7 +773,7 @@ export class ShippingService {
         provider_id: provider.id,
         service_id: service.id,
         status: 'Pending',
-        ship_fee: ahamoveResult?.price || 0,
+        ship_fee: ahamoveResult?.raw?.order?.distance_price || 0,
         cod_amount: codAmount,
         ahamove_id: String(ahamoveResult?.order_id || ''),
         nhanh_id: String(ahamoveResult?.order_id || ''),
