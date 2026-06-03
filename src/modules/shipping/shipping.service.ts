@@ -597,218 +597,474 @@ export class ShippingService {
       0. GET ORDER
       =====================================
       */
+
+
       console.log('[STEP 0] Fetch order...');
 
       const order = await this.orderRepo.findOne({
-        where: { id: orderId },
-        relations: ['orderDetails', 'orderDetails.variant'],
+        where: {
+          id: orderId,
+        },
+        relations: [
+          'orderDetails',
+          'orderDetails.variant',
+        ],
       });
 
-      console.log('[STEP 0] ORDER RESULT:', order ? 'FOUND' : 'NOT FOUND');
-
-      if (!order) {
-        throw new BadRequestException(`Order ${orderId} không tồn tại`);
-      }
-
-      /*
-      =====================================
-      1. PROVIDER
-      =====================================
-      */
-      console.log('[STEP 1] Provider lookup...');
-
-      const providerCode = 'AHAMOVE';
-
-      let provider = await this.providersService
-        .findByCode(providerCode)
-        .catch((err) => {
-          console.log('[STEP 1] Provider find error:', err);
-          return null;
-        });
-
-      if (!provider) {
-        console.log('[STEP 1] Provider not found → creating...');
-
-        provider = await this.providersService.create({
-          id: providerId || 'AHAMOVE',
-          name: 'Ahamove',
-          code: providerCode,
-          status: 'Active',
-        } as any);
-      }
-
-      console.log('[STEP 1] Provider:', provider);
-
-      /*
-      =====================================
-      2. SERVICE
-      =====================================
-      */
-      console.log('[STEP 2] Service resolve...');
-
-      const serviceCode = extraPayload.service_id || 'SGN-BIKE';
-
-      let service = await this.servicesService
-        .findByCode(serviceCode)
-        .catch((err) => {
-          console.log('[STEP 2] Service find error:', err);
-          return null;
-        });
-
-      if (!service) {
-        console.log('[STEP 2] Service not found → creating...');
-
-        service = await this.servicesService.create({
-          id: serviceId || serviceCode,
-          name: serviceCode,
-          service_code: serviceCode,
-          status: 'Active',
-        } as any);
-      }
-
-      console.log('[STEP 2] Service:', service);
-
-      /*
-      =====================================
-      3. BUILD ITEMS
-      =====================================
-      */
-      console.log('[STEP 3] Build items...');
-
-      const items = order.orderDetails.map((detail: any) => ({
-        productId: detail.product_id,
-        variantId: detail.product_variant_id,
-        code: detail.code,
-        name: detail.variant?.name || detail.name,
-        color: detail.color,
-        quantity: detail.quantity,
-        price: Number(detail.price),
-        total: Number(detail.price) * detail.quantity,
-      }));
-
-      console.log('[STEP 3] ITEMS:', JSON.stringify(items, null, 2));
-
-      /*
-      =====================================
-      4. COD
-      =====================================
-      */
-      const codAmount = order.orderDetails.reduce(
-        (total: number, item: any) =>
-          total + Number(item.price) * Number(item.quantity),
-        0,
+      console.log(
+        '[STEP 0] ORDER RESULT:',
+        order ? 'FOUND' : 'NOT FOUND',
       );
 
-      console.log('[STEP 4] COD:', codAmount);
+      if (!order) {
+        throw new BadRequestException(
+          `Order ${orderId} không tồn tại`,
+        );
+      }
 
       /*
       =====================================
-      5. BUILD AHAMOVE PAYLOAD
+      1. VALIDATE
       =====================================
       */
-      console.log('[STEP 5] Build Ahamove payload...');
 
-      const ahamovePayload = {
+      if (!extraPayload.ref_id) {
+        throw new BadRequestException(
+          'ref_id is required',
+        );
+      }
+
+      if (!extraPayload.drop_mobile) {
+        throw new BadRequestException(
+          'drop_mobile is required',
+        );
+      }
+
+      if (!extraPayload.drop_name) {
+        throw new BadRequestException(
+          'drop_name is required',
+        );
+      }
+
+      /*
+      =====================================
+      2. GET ADDRESS FROM VIETMAP
+      =====================================
+      */
+
+      console.log(
+        '[STEP 2] Get address from VietMap...',
+      );
+
+      const placeResponse =
+        await axios.get(
+          'https://maps.vietmap.vn/api/place/v3',
+          {
+            params: {
+              apikey:
+                process.env.VIETMAP_API_KEY,
+              refid:
+                extraPayload.ref_id,
+            },
+          },
+        );
+
+      const place =
+        placeResponse.data;
+
+      if (!place) {
+        throw new BadRequestException(
+          'Không tìm thấy địa chỉ',
+        );
+      }
+
+      const dropAddress =
+        place.display ||
+        place.address;
+
+      const dropLat = Number(
+        place.lat,
+      );
+
+      const dropLng = Number(
+        place.lng,
+      );
+
+      console.log(
+        '[STEP 2] VIETMAP RESULT:',
+        {
+          dropAddress,
+          dropLat,
+          dropLng,
+        },
+      );
+
+      /*
+      =====================================
+      3. PROVIDER
+      =====================================
+      */
+
+      console.log(
+        '[STEP 3] Provider lookup...',
+      );
+
+      const providerCode =
+        'AHAMOVE';
+
+      let provider =
+        await this.providersService
+          .findByCode(providerCode)
+          .catch(() => null);
+
+      if (!provider) {
+        provider =
+          await this.providersService.create(
+            {
+              id:
+                providerId ||
+                'AHAMOVE',
+              name: 'Ahamove',
+              code:
+                providerCode,
+              status:
+                'Active',
+            } as any,
+          );
+      }
+
+      console.log(
+        '[STEP 3] Provider:',
+        provider,
+      );
+
+      /*
+      =====================================
+      4. SERVICE
+      =====================================
+      */
+
+      console.log(
+        '[STEP 4] Service lookup...',
+      );
+
+      const serviceCode =
+        extraPayload.service_id ||
+        'SGN-BIKE';
+
+      let service =
+        await this.servicesService
+          .findByCode(
+            serviceCode,
+          )
+          .catch(() => null);
+
+      if (!service) {
+        service =
+          await this.servicesService.create(
+            {
+              id:
+                serviceId ||
+                serviceCode,
+              name:
+                serviceCode,
+              service_code:
+                serviceCode,
+              status:
+                'Active',
+            } as any,
+          );
+      }
+
+      console.log(
+        '[STEP 4] Service:',
+        service,
+      );
+
+      /*
+      =====================================
+      5. BUILD ITEMS
+      =====================================
+      */
+
+      console.log(
+        '[STEP 5] Build items...',
+      );
+
+      const items =
+        order.orderDetails.map(
+          (detail: any) => ({
+            productId:
+              detail.product_id,
+
+            variantId:
+              detail.product_variant_id,
+
+            code:
+              detail.code,
+
+            name:
+              detail.variant
+                ?.name ||
+              detail.name,
+
+            color:
+              detail.color,
+
+            quantity:
+              detail.quantity,
+
+            price:
+              Number(
+                detail.price,
+              ),
+
+            total:
+              Number(
+                detail.price,
+              ) *
+              detail.quantity,
+          }),
+        );
+
+      console.log(
+        '[STEP 5] ITEMS:',
+        JSON.stringify(
+          items,
+          null,
+          2,
+        ),
+      );
+
+      /*
+      =====================================
+      6. COD
+      =====================================
+      */
+      const codAmount =
+        Number(order.total || 0) -
+        Number(order.extra_fee || 0);
+
+      console.log(
+        '[STEP 6] PRODUCT AMOUNT:',
+        codAmount,
+      );
+      /*
+      =====================================
+      7. BUILD AHAMOVE PAYLOAD
+      =====================================
+      */
+
+      const ahamovePayload =
+      {
         order_time: 0,
+
         path: [
           {
-            address: PICK_ADDRESS,
-            mobile: PICK_MOBILE,
-            name: 'TrueLook Store',
+            address:
+              PICK_ADDRESS,
+
+            mobile:
+              PICK_MOBILE,
+
+            name:
+              'TrueLook Store',
+
+            lat:
+              10.847706,
+
+            lng:
+              106.83636,
           },
+
           {
-            address: extraPayload.drop_address,
-            mobile: extraPayload.drop_mobile,
-            name: extraPayload.drop_name,
-            cod: codAmount,
+            address:
+              dropAddress,
+
+            mobile:
+              extraPayload.drop_mobile,
+
+            name:
+              extraPayload.drop_name,
+
+            lat:
+              dropLat,
+
+            lng:
+              dropLng,
+
           },
         ],
-        service_id: serviceCode,
-        payment_method: extraPayload.payment_method || 'CASH',
-        remarks: extraPayload.remarks || '',
-        promo_code: extraPayload.promo_code || '',
+
+        service_id:
+          serviceCode,
+
+        payment_method:
+          extraPayload.payment_method ||
+          'CASH',
+
+        remarks:
+          extraPayload.remarks ||
+          '',
+
+        promo_code:
+          extraPayload.promo_code ||
+          '',
+
         requests: [],
-        group_requests: [],
+
+        group_requests:
+          [],
+
         items,
       };
 
       console.log(
-        '[STEP 5] AHAMOVE PAYLOAD:',
-        JSON.stringify(ahamovePayload, null, 2),
+        '[STEP 7] AHAMOVE PAYLOAD:',
+        JSON.stringify(
+          ahamovePayload,
+          null,
+          2,
+        ),
       );
 
       /*
       =====================================
-      6. CREATE ORDER AHAMOVE
+      8. CREATE ORDER
       =====================================
       */
-      console.log('[STEP 6] Calling Ahamove API...');
 
-      let ahamoveResult;
+      console.log(
+        '[STEP 8] Calling Ahamove...',
+      );
 
-      try {
-        ahamoveResult = await this.createAhamoveOrder(ahamovePayload);
+      const ahamoveResult =
+        await this.createAhamoveOrder(
+          ahamovePayload,
+        );
 
-        console.log('[STEP 6] AHAMOVE RESPONSE SUCCESS:');
-        console.log(JSON.stringify(ahamoveResult, null, 2));
-      } catch (err: any) {
-        console.log('[STEP 6] AHAMOVE ERROR:');
-        console.log(err?.response?.data || err.message || err);
+      console.log(
+        '[STEP 8] SUCCESS:',
+      );
 
-        throw err;
-      }
+      console.log(
+        JSON.stringify(
+          ahamoveResult,
+          null,
+          2,
+        ),
+      );
 
       /*
       =====================================
-      7. SAVE SHIPPING
+      9. SAVE SHIPPING
       =====================================
       */
-      console.log('[STEP 7] Saving shipping...');
 
-      const shippingId = String(Date.now());
+      const shipping =
+        this.shippingRepo.create(
+          {
+            id: String(
+              Date.now(),
+            ),
 
-      const newShipping = this.shippingRepo.create({
-        id: shippingId,
-        order_id: orderId,
-        provider_id: provider.id,
-        service_id: service.id,
-        status: 'Pending',
-        ship_fee: ahamoveResult?.raw?.order?.distance_price || 0,
-        cod_amount: codAmount,
-        ahamove_id: String(ahamoveResult?.order_id || ''),
-        nhanh_id: String(ahamoveResult?.order_id || ''),
-        tracking_url: ahamoveResult?.shared_link,
-        create_at: new Date(),
-        update_at: new Date(),
-      } as any);
+            order_id:
+              orderId,
 
-      console.log('[STEP 7] SHIPPING ENTITY:', newShipping);
+            provider_id:
+              provider.id,
 
-      const savedShipping = await this.shippingRepo.save(newShipping);
+            service_id:
+              service.id,
 
-      console.log('[STEP 7] SHIPPING SAVED SUCCESS:', savedShipping);
+            status:
+              'Pending',
+
+            ship_fee:
+              ahamoveResult?.raw
+                ?.order
+                ?.total_price ||
+              ahamoveResult?.raw
+                ?.order
+                ?.partner_pay ||
+              0,
+
+            cod_amount: codAmount,
+
+            ahamove_id:
+              String(
+                ahamoveResult?.order_id ||
+                '',
+              ),
+
+            nhanh_id:
+              String(
+                ahamoveResult?.order_id ||
+                '',
+              ),
+
+            tracking_url:
+              ahamoveResult?.shared_link,
+
+            create_at:
+              new Date(),
+
+            update_at:
+              new Date(),
+          } as any,
+        );
+
+      const savedShipping =
+        await this.shippingRepo.save(
+          shipping,
+        );
+
+      console.log(
+        '[STEP 9] SHIPPING SAVED:',
+        savedShipping,
+      );
 
       /*
       =====================================
-      8. RETURN
+      10. RETURN
       =====================================
       */
-      console.log('[STEP 8] DONE SUCCESS');
 
       return {
         success: true,
-        ahamove_order: ahamoveResult,
-        shipping: savedShipping,
+        ahamove_order:
+          ahamoveResult,
+        shipping:
+          savedShipping,
       };
+
+
     } catch (error: any) {
-      console.log('==============================');
-      console.log('[AHAMOVE CHECKOUT ERROR]');
-      console.log(error?.response?.data || error.message || error);
-      console.log('==============================');
+      console.log(
+        '==============================',
+      );
+
+
+      console.log(
+        '[AHAMOVE CHECKOUT ERROR]',
+      );
+
+      console.log(
+        error?.response?.data ||
+        error?.message ||
+        error,
+      );
+
+      console.log(
+        '==============================',
+      );
 
       throw error;
+
+
     }
   }
+
 
   async estimateAhamoveFee(
     extraPayload: any,
