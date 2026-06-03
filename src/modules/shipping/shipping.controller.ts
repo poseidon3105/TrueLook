@@ -108,13 +108,33 @@ export class ShippingController {
   @Post('ahamove/webhook')
   @HttpCode(200)
   @ApiOperation({
-    summary:
-      'Webhook nhận trạng thái từ Ahamove',
+    summary: 'Webhook nhận trạng thái từ Ahamove',
   })
   @ApiConsumes('application/json')
   async handleAhamoveWebhook(
     @Body() payload: any,
   ) {
+    console.log(
+      '==============================',
+    );
+    console.log(
+      'AHAMOVE WEBHOOK RECEIVED',
+    );
+    console.log(
+      'Time:',
+      new Date().toISOString(),
+    );
+    console.log(
+      JSON.stringify(
+        payload,
+        null,
+        2,
+      ),
+    );
+    console.log(
+      '==============================',
+    );
+
     return this.shippingService.handleAhamoveWebhook(
       payload,
     );
