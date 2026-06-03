@@ -146,24 +146,18 @@ export class ShippingController {
     summary:
       'Checkout Ahamove bằng order nội bộ',
   })
-
   @ApiBody({
-    description:
-      'Frontend chỉ truyền orderId + thông tin người nhận',
-
     schema: {
       example: {
-
-        orderId: 'ORDER_001',
+        orderId: '1773359344096',
 
         providerId: 'AHAMOVE',
 
         serviceId: 'SGN-BIKE',
 
         extraPayload: {
-
-          drop_address:
-            '475A Điện Biên Phủ, Bình Thạnh, TP.HCM',
+          ref_id:
+            'pel_2de517c5b7e14e15c18b4668e099fb31',
 
           drop_name:
             'Nguyễn Văn A',
@@ -174,20 +168,15 @@ export class ShippingController {
           service_id:
             'SGN-BIKE',
 
-          payment_method:
-            'CASH',
-
           remarks:
             'Giao cẩn thận',
         },
       },
     },
   })
-
   async checkoutAhamove(
     @Body() body: any,
   ) {
-
     const {
       orderId,
       providerId,
@@ -195,13 +184,12 @@ export class ShippingController {
       extraPayload,
     } = body;
 
-    return this.shippingService
-      .processAhamoveCheckout(
-        orderId,
-        providerId,
-        serviceId,
-        extraPayload,
-      );
+    return this.shippingService.processAhamoveCheckout(
+      orderId,
+      providerId,
+      serviceId,
+      extraPayload,
+    );
   }
 
   @Post('address/autocomplete')
