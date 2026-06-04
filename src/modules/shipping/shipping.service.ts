@@ -592,12 +592,12 @@ export class ShippingService {
     const PICK_MOBILE = '0822030768';
 
     try {
+
       /*
       =====================================
       0. GET ORDER
       =====================================
       */
-
 
       console.log('[STEP 0] Fetch order...');
 
@@ -622,17 +622,17 @@ export class ShippingService {
         );
       }
 
+      if (!order.ref_id) {
+        throw new BadRequestException(
+          'Order chưa có ref_id',
+        );
+      }
+
       /*
       =====================================
       1. VALIDATE
       =====================================
       */
-
-      if (!extraPayload.ref_id) {
-        throw new BadRequestException(
-          'ref_id is required',
-        );
-      }
 
       if (!extraPayload.drop_mobile) {
         throw new BadRequestException(
@@ -656,6 +656,11 @@ export class ShippingService {
         '[STEP 2] Get address from VietMap...',
       );
 
+      console.log(
+        '[STEP 2] USING ORDER REF_ID:',
+        order.ref_id,
+      );
+
       const placeResponse =
         await axios.get(
           'https://maps.vietmap.vn/api/place/v3',
@@ -664,7 +669,7 @@ export class ShippingService {
               apikey:
                 process.env.VIETMAP_API_KEY,
               refid:
-                extraPayload.ref_id,
+                order.ref_id,
             },
           },
         );
@@ -733,20 +738,11 @@ export class ShippingService {
           );
       }
 
-      console.log(
-        '[STEP 3] Provider:',
-        provider,
-      );
-
       /*
       =====================================
       4. SERVICE
       =====================================
       */
-
-      console.log(
-        '[STEP 4] Service lookup...',
-      );
 
       const serviceCode =
         extraPayload.service_id ||
@@ -776,20 +772,11 @@ export class ShippingService {
           );
       }
 
-      console.log(
-        '[STEP 4] Service:',
-        service,
-      );
-
       /*
       =====================================
       5. BUILD ITEMS
       =====================================
       */
-
-      console.log(
-        '[STEP 5] Build items...',
-      );
 
       const items =
         order.orderDetails.map(
@@ -804,8 +791,7 @@ export class ShippingService {
               detail.code,
 
             name:
-              detail.variant
-                ?.name ||
+              detail.variant?.name ||
               detail.name,
 
             color:
@@ -827,20 +813,12 @@ export class ShippingService {
           }),
         );
 
-      console.log(
-        '[STEP 5] ITEMS:',
-        JSON.stringify(
-          items,
-          null,
-          2,
-        ),
-      );
-
       /*
       =====================================
-      6. COD
+      6. PRODUCT AMOUNT
       =====================================
       */
+
       const codAmount =
         Number(order.total || 0) -
         Number(order.extra_fee || 0);
@@ -849,14 +827,14 @@ export class ShippingService {
         '[STEP 6] PRODUCT AMOUNT:',
         codAmount,
       );
+
       /*
       =====================================
       7. BUILD AHAMOVE PAYLOAD
       =====================================
       */
 
-      const ahamovePayload =
-      {
+      const ahamovePayload = {
         order_time: 0,
 
         path: [
@@ -892,7 +870,6 @@ export class ShippingService {
 
             lng:
               dropLng,
-
           },
         ],
 
@@ -913,122 +890,72 @@ export class ShippingService {
 
         requests: [],
 
-        group_requests:
-          [],
+        group_requests: [],
 
         items,
       };
-
-      console.log(
-        '[STEP 7] AHAMOVE PAYLOAD:',
-        JSON.stringify(
-          ahamovePayload,
-          null,
-          2,
-        ),
-      );
-
-      /*
-      =====================================
-      8. CREATE ORDER
-      =====================================
-      */
-
-      console.log(
-        '[STEP 8] Calling Ahamove...',
-      );
 
       const ahamoveResult =
         await this.createAhamoveOrder(
           ahamovePayload,
         );
 
-      console.log(
-        '[STEP 8] SUCCESS:',
-      );
-
-      console.log(
-        JSON.stringify(
-          ahamoveResult,
-          null,
-          2,
-        ),
-      );
-
-      /*
-      =====================================
-      9. SAVE SHIPPING
-      =====================================
-      */
-
       const shipping =
-        this.shippingRepo.create(
-          {
-            id: String(
-              Date.now(),
+        this.shippingRepo.create({
+          id: String(
+            Date.now(),
+          ),
+
+          order_id:
+            orderId,
+
+          provider_id:
+            provider.id,
+
+          service_id:
+            service.id,
+
+          status:
+            'Pending',
+
+          ship_fee:
+            ahamoveResult?.raw
+              ?.order
+              ?.total_price ||
+            ahamoveResult?.raw
+              ?.order
+              ?.partner_pay ||
+            0,
+
+          cod_amount:
+            codAmount,
+
+          ahamove_id:
+            String(
+              ahamoveResult?.order_id ||
+              '',
             ),
 
-            order_id:
-              orderId,
+          nhanh_id:
+            String(
+              ahamoveResult?.order_id ||
+              '',
+            ),
 
-            provider_id:
-              provider.id,
+          tracking_url:
+            ahamoveResult?.shared_link,
 
-            service_id:
-              service.id,
+          create_at:
+            new Date(),
 
-            status:
-              'Pending',
-
-            ship_fee:
-              ahamoveResult?.raw
-                ?.order
-                ?.total_price ||
-              ahamoveResult?.raw
-                ?.order
-                ?.partner_pay ||
-              0,
-
-            cod_amount: codAmount,
-
-            ahamove_id:
-              String(
-                ahamoveResult?.order_id ||
-                '',
-              ),
-
-            nhanh_id:
-              String(
-                ahamoveResult?.order_id ||
-                '',
-              ),
-
-            tracking_url:
-              ahamoveResult?.shared_link,
-
-            create_at:
-              new Date(),
-
-            update_at:
-              new Date(),
-          } as any,
-        );
+          update_at:
+            new Date(),
+        } as any);
 
       const savedShipping =
         await this.shippingRepo.save(
           shipping,
         );
-
-      console.log(
-        '[STEP 9] SHIPPING SAVED:',
-        savedShipping,
-      );
-
-      /*
-      =====================================
-      10. RETURN
-      =====================================
-      */
 
       return {
         success: true,
@@ -1038,13 +965,7 @@ export class ShippingService {
           savedShipping,
       };
 
-
     } catch (error: any) {
-      console.log(
-        '==============================',
-      );
-
-
       console.log(
         '[AHAMOVE CHECKOUT ERROR]',
       );
@@ -1055,13 +976,7 @@ export class ShippingService {
         error,
       );
 
-      console.log(
-        '==============================',
-      );
-
       throw error;
-
-
     }
   }
 

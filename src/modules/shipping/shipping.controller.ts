@@ -143,10 +143,11 @@ export class ShippingController {
 
   @Post('ahamove/checkout')
   @ApiOperation({
-    summary:
-      'Checkout Ahamove bằng order nội bộ',
+    summary: 'Checkout Ahamove bằng order nội bộ',
   })
   @ApiBody({
+    description:
+      'Chỉ cần truyền orderId. Địa chỉ giao hàng sẽ lấy từ ref_id đã lưu trong order.',
     schema: {
       example: {
         orderId: '1773359344096',
@@ -156,20 +157,13 @@ export class ShippingController {
         serviceId: 'SGN-BIKE',
 
         extraPayload: {
-          ref_id:
-            'pel_2de517c5b7e14e15c18b4668e099fb31',
+          drop_name: 'Nguyễn Văn A',
 
-          drop_name:
-            'Nguyễn Văn A',
+          drop_mobile: '0912345678',
 
-          drop_mobile:
-            '0912345678',
+          service_id: 'SGN-BIKE',
 
-          service_id:
-            'SGN-BIKE',
-
-          remarks:
-            'Giao cẩn thận',
+          remarks: 'Giao cẩn thận',
         },
       },
     },
