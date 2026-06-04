@@ -9,4 +9,8 @@ export class CreateOrderDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   extra_fee: number;
+
+  @IsNotEmpty()
+  @IsString()
+  ref_id?: string;
 }

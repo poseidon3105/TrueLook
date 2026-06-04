@@ -79,6 +79,7 @@ export class OrdersService {
         customer_id: createOrderDto.customer_id,
         total: 0,
         extra_fee: createOrderDto.extra_fee,
+        ref_id: createOrderDto.ref_id,
         status: "Pending",
       });
 
