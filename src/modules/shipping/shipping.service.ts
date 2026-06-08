@@ -521,10 +521,17 @@ export class ShippingService {
       console.log(
         'Không tìm thấy shipping',
       );
+
       return {
         success: false,
       };
     }
+
+    /*
+    =====================================
+    UPDATE SHIPPING STATUS
+    =====================================
+    */
 
     shipping.status =
       payload.status;
@@ -538,33 +545,77 @@ export class ShippingService {
       payload.status,
     );
 
-    if (
-      payload.status ===
-      'COMPLETED'
-    ) {
-      await this.orderRepo.update(
-        {
-          id: shipping.order_id,
-        },
-        {
-          status: 'DELIVERED',
-        },
-      );
-    }
+    /*
+    =====================================
+    UPDATE ORDER STATUS
+    =====================================
+    */
 
-    if (
-      payload.status ===
-      'CANCELLED'
-    ) {
-      await this.orderRepo.update(
-        {
-          id: shipping.order_id,
-        },
-        {
-          status:
-            'SHIPPING_FAILED',
-        },
-      );
+    switch (payload.status) {
+
+      // tài xế đã nhận đơn
+      case 'ACCEPTED':
+
+      // tài xế đang tới lấy hàng
+      case 'PICKING':
+
+      // đã lấy hàng
+      case 'PICKED_UP':
+
+      // đang giao
+      case 'DELIVERING':
+
+        await this.orderRepo.update(
+          {
+            id: shipping.order_id,
+          },
+          {
+            status: 'Process',
+          },
+        );
+
+        console.log(
+          'Order updated -> Process',
+        );
+
+        break;
+
+      // giao thành công
+      case 'COMPLETED':
+
+        await this.orderRepo.update(
+          {
+            id: shipping.order_id,
+          },
+          {
+            status: 'Complete',
+          },
+        );
+
+        console.log(
+          'Order updated -> Complete',
+        );
+
+        break;
+
+      // hủy
+      case 'CANCELLED':
+
+        await this.orderRepo.update(
+          {
+            id: shipping.order_id,
+          },
+          {
+            status:
+              'Shipping_Failed',
+          },
+        );
+
+        console.log(
+          'Order updated -> SHIPPING_FAILED',
+        );
+
+        break;
     }
 
     return {
