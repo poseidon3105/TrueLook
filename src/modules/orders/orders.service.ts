@@ -1,8 +1,9 @@
-import { Logger,Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Logger, Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto, UpdateOrderStatusDto } from './dto/update-order.dto';
-import { Repository, DataSource } from 'typeorm';
+import { In, Repository, DataSource } from 'typeorm';
+
 
 import { Order } from './entities/order.entity';
 import { User } from '../users/entities/user.entity';
@@ -42,9 +43,8 @@ export class OrdersService {
     private dataSource: DataSource,
   ) { }
 
-  
-  async create(createOrderDto: CreateOrderDto) {
 
+  async create(createOrderDto: CreateOrderDto) {
     const customer = await this.usersRepository.findOneBy({
       id: createOrderDto.customer_id,
     });
@@ -55,8 +55,7 @@ export class OrdersService {
       );
     }
 
-    return await this.dataSource.transaction(async manager => {
-
+    return await this.dataSource.transaction(async (manager) => {
       const cart = await manager.findOne(Cart, {
         where: { user_id: createOrderDto.customer_id },
       });
@@ -65,12 +64,31 @@ export class OrdersService {
         throw new NotFoundException('Cart not found');
       }
 
+      if (
+        !createOrderDto.selected_cart_item_ids ||
+        createOrderDto.selected_cart_item_ids.length === 0
+      ) {
+        throw new BadRequestException('No cart items selected');
+      }
+
       const cartItems = await manager.find(CartItem, {
-        where: { cart_id: cart.id },
+        where: {
+          cart_id: cart.id,
+          id: In(createOrderDto.selected_cart_item_ids),
+        },
       });
 
       if (cartItems.length === 0) {
-        throw new BadRequestException('Cart is empty');
+        throw new BadRequestException('Selected cart items not found');
+      }
+
+      // Đảm bảo tất cả id FE gửi lên đều tồn tại trong cart
+      if (
+        cartItems.length !== createOrderDto.selected_cart_item_ids.length
+      ) {
+        throw new BadRequestException(
+          'Some selected cart items are invalid',
+        );
       }
 
       let total = 0;
@@ -80,13 +98,12 @@ export class OrdersService {
         total: 0,
         extra_fee: createOrderDto.extra_fee,
         ref_id: createOrderDto.ref_id,
-        status: "Pending",
+        status: 'Pending',
       });
 
       const savedOrder = await manager.save(newOrder);
 
       for (const item of cartItems) {
-
         const variant = await manager.findOne(ProductVariant, {
           where: { id: item.variant_id },
         });
@@ -105,14 +122,15 @@ export class OrdersService {
         const orderDetail = this.orderDetailRepository.create({
           order_id: savedOrder.id,
           variant_id: variant.id,
-          price: price,
+          price,
           quantity: item.quantity,
         });
 
         await manager.save(orderDetail);
       }
 
-      savedOrder.total = total + Number(createOrderDto.extra_fee);
+      savedOrder.total =
+        total + Number(createOrderDto.extra_fee || 0);
 
       await manager.save(savedOrder);
 
@@ -120,7 +138,7 @@ export class OrdersService {
     });
   }
 
-  
+
   async confirmOrder(orderId: string) {
 
     return await this.dataSource.transaction(async manager => {
@@ -139,7 +157,7 @@ export class OrdersService {
 
       this.logger.log(`Order found: status=${order.status}, total=${order.total}`);
 
-      
+
       const payment = await manager.findOne(Payment, {
         where: {
           order_id: orderId,
@@ -154,7 +172,7 @@ export class OrdersService {
 
       this.logger.log(`Payment found: amount=${payment.amount}`);
 
-     
+
       if (order.total === payment.amount && order.status === "Pending") {
 
         this.logger.warn(`Order ${orderId} already processed`);
@@ -165,7 +183,7 @@ export class OrdersService {
         };
       }
 
-      
+
       this.logger.log(`Updating order status to Pending`);
 
       order.total = payment.amount;
@@ -173,7 +191,7 @@ export class OrdersService {
 
       await manager.save(order);
 
-      
+
       const orderDetails = await manager.find(OrderDetail, {
         where: { order_id: orderId },
       });
@@ -185,7 +203,7 @@ export class OrdersService {
         throw new BadRequestException('Order has no items');
       }
 
-      
+
       for (const item of orderDetails) {
 
         this.logger.log(`Processing variant ${item.variant_id}`);
@@ -222,7 +240,7 @@ export class OrdersService {
         await manager.save(variant);
       }
 
-      
+
       const cart = await manager.findOne(Cart, {
         where: { user_id: order.customer_id },
       });
@@ -244,31 +262,31 @@ export class OrdersService {
 
     });
   }
-  
+
   async findAll() {
     const data = await this.ordersRepository
       .createQueryBuilder('o')
 
-      
+
       .leftJoinAndSelect('o.customer', 'customer')
 
-      
+
       .leftJoinAndSelect('customer.addresses', 'addresses')
 
-      
+
       .leftJoinAndSelect('o.orderDetails', 'orderDetails')
 
-      
+
       .leftJoinAndSelect('orderDetails.variant', 'variant')
 
-      
+
       .leftJoinAndSelect('o.payments', 'payments')
 
       .orderBy('o.create_at', 'DESC')
       .getMany();
     return data;
   }
-  
+
   async findOne(id: string) {
     const order = await this.ordersRepository.findOne({
       where: { id },
@@ -281,7 +299,7 @@ export class OrdersService {
     return order;
   }
 
-  
+
   async update(id: string, updateOrderDto: UpdateOrderDto) {
 
     await this.findOne(id);
@@ -330,7 +348,7 @@ export class OrdersService {
     };
   }
 
-  
+
   async remove(id: string) {
 
     const order = await this.ordersRepository.findOne({
