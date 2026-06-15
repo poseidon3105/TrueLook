@@ -11,6 +11,10 @@ export class CreateOrderDto {
   extra_fee: number;
 
   @IsNotEmpty()
+  @IsString({ each: true })
+  selected_cart_item_ids: string[];
+
+  @IsNotEmpty()
   @IsString()
   ref_id?: string;
 }
