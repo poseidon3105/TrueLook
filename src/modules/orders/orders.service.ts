@@ -374,15 +374,10 @@ export class OrdersService {
   }
 
   async getOrdersByUser(userId: string) {
-
     const orders = await this.ordersRepository.find({
       where: { customer_id: userId },
-      order: { create_at: "DESC" }
+      order: { create_at: 'DESC' },
     });
-
-    if (orders.length === 0) {
-      throw new NotFoundException(`No orders found for user ${userId}`);
-    }
 
     return orders;
   }
