@@ -90,10 +90,12 @@ export class ShippingController {
     return this.shippingService.createAhamoveOrder(body);
   }
 
-  @Post('ahamove/orders')
-  @ApiOperation({ summary: 'Lấy danh sách đơn trên Ahamove (nếu cần)' })
-  async getAhamoveOrders(@Body() body: any) {
-    return this.shippingService.getAhamoveOrders(body);
+  @Get('ahamove/orders')
+  @ApiOperation({
+    summary: 'Lấy tất cả shipping'
+  })
+  async getAhamoveOrders() {
+    return this.shippingService.getAhamoveOrders();
   }
 
   @Post('ahamove/update-order')
@@ -106,13 +108,33 @@ export class ShippingController {
   @Post('ahamove/webhook')
   @HttpCode(200)
   @ApiOperation({
-    summary:
-      'Webhook nhận trạng thái từ Ahamove',
+    summary: 'Webhook nhận trạng thái từ Ahamove',
   })
   @ApiConsumes('application/json')
   async handleAhamoveWebhook(
     @Body() payload: any,
   ) {
+    console.log(
+      '==============================',
+    );
+    console.log(
+      'AHAMOVE WEBHOOK RECEIVED',
+    );
+    console.log(
+      'Time:',
+      new Date().toISOString(),
+    );
+    console.log(
+      JSON.stringify(
+        payload,
+        null,
+        2,
+      ),
+    );
+    console.log(
+      '==============================',
+    );
+
     return this.shippingService.handleAhamoveWebhook(
       payload,
     );
@@ -121,51 +143,34 @@ export class ShippingController {
 
   @Post('ahamove/checkout')
   @ApiOperation({
-    summary:
-      'Checkout Ahamove bằng order nội bộ',
+    summary: 'Checkout Ahamove bằng order nội bộ',
   })
-
   @ApiBody({
     description:
-      'Frontend chỉ truyền orderId + thông tin người nhận',
-
+      'Chỉ cần truyền orderId. Địa chỉ giao hàng sẽ lấy từ ref_id đã lưu trong order.',
     schema: {
       example: {
-
-        orderId: 'ORDER_001',
+        orderId: '1773359344096',
 
         providerId: 'AHAMOVE',
 
         serviceId: 'SGN-BIKE',
 
         extraPayload: {
+          drop_name: 'Nguyễn Văn A',
 
-          drop_address:
-            '475A Điện Biên Phủ, Bình Thạnh, TP.HCM',
+          drop_mobile: '0912345678',
 
-          drop_name:
-            'Nguyễn Văn A',
+          service_id: 'SGN-BIKE',
 
-          drop_mobile:
-            '0912345678',
-
-          service_id:
-            'SGN-BIKE',
-
-          payment_method:
-            'CASH',
-
-          remarks:
-            'Giao cẩn thận',
+          remarks: 'Giao cẩn thận',
         },
       },
     },
   })
-
   async checkoutAhamove(
     @Body() body: any,
   ) {
-
     const {
       orderId,
       providerId,
@@ -173,11 +178,36 @@ export class ShippingController {
       extraPayload,
     } = body;
 
+    return this.shippingService.processAhamoveCheckout(
+      orderId,
+      providerId,
+      serviceId,
+      extraPayload,
+    );
+  }
+
+  @Post('address/autocomplete')
+  @ApiOperation({
+    summary:
+      'Tìm kiếm địa chỉ bằng VietMap',
+  })
+  @ApiBody({
+    schema: {
+      example: {
+        extraPayload: {
+          text: '88 Phước Thiện',
+        },
+      },
+    },
+  })
+  async autocompleteAddress(
+    @Body() body: any,
+  ) {
+    const { extraPayload } =
+      body;
+
     return this.shippingService
-      .processAhamoveCheckout(
-        orderId,
-        providerId,
-        serviceId,
+      .autocompleteAddress(
         extraPayload,
       );
   }
@@ -189,21 +219,29 @@ export class ShippingController {
   @ApiBody({
     schema: {
       example: {
-
-        orderId: 'ORDER_001',
-
         extraPayload: {
+          cart_item_ids: [
+            '1',
+            '2',
+            '3',
+          ],
 
           service_id: 'SGN-BIKE',
 
-          drop_address:
-            '475A Điện Biên Phủ, Bình Thạnh, Hồ Chí Minh',
+          ref_id:
+            'auto:RApFCSImcWBoNWFYdmtxAHYnbCBQBidpBAJcdl0OXghF2YzGQkQACFJQGwIdVQJWCxgHAwVTHVJVD1kcAQZLClYAXgBcDwVRAlQFA1ZZc1NBFVc',
 
           drop_name:
             'Nguyễn Văn A',
 
           drop_mobile:
             '0912345678',
+
+          payment_method:
+            'CASH',
+
+          remarks:
+            'Giao cẩn thận',
         },
       },
     },
@@ -211,16 +249,9 @@ export class ShippingController {
   async estimateAhamoveFee(
     @Body() body: any,
   ) {
-
-    const {
-      orderId,
-      extraPayload,
-    } = body;
-
     return this.shippingService
       .estimateAhamoveFee(
-        orderId,
-        extraPayload,
+        body.extraPayload,
       );
   }
 

@@ -7,10 +7,12 @@ import { Shipping } from './entities/shipping.entity';
 import { NhanhConfig } from './entities/nhanh-config.entity';
 import { Order } from '../orders/entities/order.entity';
 import { OrderDetail } from '../order_details/entities/order_detail.entity';
+import { CartItem } from '../cart_items/entities/cart_item.entity';
 import { CreateShippingDto } from './dto/create-shipping.dto';
 import { UpdateShippingDto } from './dto/update-shipping.dto';
 import { ShippingProvidersService } from '../shipping_providers/shipping_providers.service';
 import { ShippingServicesService } from '../shipping_services/shipping_services.service';
+import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 
 @Injectable()
 export class ShippingService {
@@ -30,6 +32,12 @@ export class ShippingService {
 
     @InjectRepository(OrderDetail)
     private orderDetailRepo: Repository<OrderDetail>,
+
+    @InjectRepository(CartItem)
+    private cartItemRepo: Repository<CartItem>,
+
+    @InjectRepository(ProductVariant)
+    private variantRepo: Repository<ProductVariant>,
   ) { }
 
   /*
@@ -328,21 +336,35 @@ export class ShippingService {
     }
   }
 
-  async getAhamoveOrders(payload: any) {
+  async getAhamoveOrders() {
     try {
-      const headers = await this.getAhamoveAuthHeaders();
-      const url = this.ahamoveUrl('/v3/orders/query');
-      console.log('[Ahamove] get-orders url=', url, 'payload=', JSON.stringify(payload));
-      const response = await axios.post(url, payload, { headers });
 
-      return response.data;
+      const shippings =
+        await this.shippingRepo.find({
+          order: {
+            create_at: 'DESC',
+          },
+        });
+
+      return {
+        success: true,
+        total: shippings.length,
+        data: shippings,
+      };
+
     } catch (error: any) {
-      console.log('===== AHAMOVE GET ORDERS ERROR =====');
-      console.log(error.response?.data || error.message);
+
+      console.log(
+        '===== GET SHIPPING LIST ERROR =====',
+      );
+
+      console.log(
+        error.message,
+      );
+
       throw error;
     }
   }
-
   async updateAhamoveOrder(payload: any) {
     try {
       if (!payload?.order_id) {
@@ -480,171 +502,194 @@ export class ShippingService {
   }
 
   async handleAhamoveWebhook(payload: any) {
-    try {
+  try {
+    console.log(
+      '===== AHAMOVE WEBHOOK =====',
+    );
+
+    console.log(
+      JSON.stringify(payload, null, 2),
+    );
+
+    const order =
+      payload?.order ||
+      payload?.data ||
+      payload;
+
+    const orderId =
+      order?._id ||
+      order?.id ||
+      order?.order_id;
+
+    const rawStatus =
+      order?.status;
+
+    if (!orderId || !rawStatus) {
+      return {
+        success: false,
+        message:
+          'Missing orderId/status',
+      };
+    }
+
+    const shippingRecord =
+      await this.shippingRepo.findOne({
+        where: {
+          ahamove_id: String(orderId),
+        } as any,
+      });
+
+    if (!shippingRecord) {
       console.log(
-        '===== AHAMOVE WEBHOOK =====',
-      );
-
-      console.log(
-        JSON.stringify(payload, null, 2),
-      );
-
-      const order =
-        payload?.order ||
-        payload?.data ||
-        payload;
-
-      const orderId =
-        order?._id ||
-        order?.id ||
-        order?.order_id;
-
-      const rawStatus =
-        order?.status;
-
-      if (!orderId || !rawStatus) {
-        return {
-          success: false,
-          message:
-            'Missing orderId/status',
-        };
-      }
-
-      const shippingRecord =
-        await this.shippingRepo.findOne({
-          where: {
-            ahamove_id:
-              String(orderId),
-          } as any,
-        });
-
-      if (!shippingRecord) {
-        console.log(
-          '[Webhook] shipping not found:',
-          orderId,
-        );
-
-        return {
-          success: true,
-        };
-      }
-
-      const status = String(rawStatus)
-        .trim()
-        .toUpperCase();
-
-      let localStatus =
-        shippingRecord.status;
-
-      switch (status) {
-        case 'ASSIGNING':
-          localStatus = 'Pending';
-          break;
-
-        case 'ACCEPTED':
-          localStatus =
-            'ReadyToPick';
-          break;
-
-        case 'PICKING':
-          localStatus = 'Picking';
-          break;
-
-        case 'DELIVERING':
-        case 'ON_GOING':
-          localStatus =
-            'Delivering';
-          break;
-
-        case 'COMPLETED':
-        case 'DELIVERED':
-          localStatus =
-            'Delivered';
-          break;
-
-        case 'CANCELED':
-        case 'CANCELLED':
-        case 'FAILED':
-          localStatus =
-            'Canceled';
-          break;
-      }
-
-      if (
-        shippingRecord.status ===
-        localStatus
-      ) {
-        return {
-          success: true,
-          message:
-            'Status unchanged',
-        };
-      }
-
-      const oldStatus =
-        shippingRecord.status;
-
-      shippingRecord.status =
-        localStatus;
-
-      shippingRecord.update_at =
-        new Date();
-
-      await this.shippingRepo.save(
-        shippingRecord,
-      );
-
-      /**
-       * Hoàn lại tồn kho nếu giao hàng thất bại
-       * Chỉ chạy 1 lần khi chuyển sang Canceled
-       */
-      if (
-        localStatus === 'Canceled' &&
-        oldStatus !== 'Canceled'
-      ) {
-        const orderDetails =
-          await this.orderDetailRepo.find({
-            where: {
-              order_id:
-                shippingRecord.order_id,
-            },
-          });
-
-        for (const item of orderDetails) {
-          await this.variantRepo.increment(
-            {
-              id: item.variant_id,
-            },
-            'quantity',
-            item.quantity,
-          );
-        }
-
-        console.log(
-          `[Webhook] Inventory restored for order ${shippingRecord.order_id}`,
-        );
-      }
-
-      console.log(
-        `[Webhook] ${orderId} -> ${localStatus}`,
+        '[Webhook] shipping not found:',
+        orderId,
       );
 
       return {
         success: true,
       };
-    } catch (error: any) {
-      console.log(
-        '===== WEBHOOK ERROR =====',
-      );
+    }
 
-      console.log(error.message);
+    const status = String(rawStatus)
+      .trim()
+      .toUpperCase();
 
+    let localStatus =
+      shippingRecord.status;
+
+    switch (status) {
+      case 'ASSIGNING':
+        localStatus = 'Pending';
+        break;
+
+      case 'ACCEPTED':
+        localStatus = 'ReadyToPick';
+        break;
+
+      case 'PICKING':
+      case 'PICKED_UP':
+      case 'DELIVERING':
+      case 'ON_GOING':
+        localStatus = 'Delivering';
+
+        await this.orderRepo.update(
+          {
+            id: shippingRecord.order_id,
+          },
+          {
+            status: 'Process',
+          },
+        );
+
+        break;
+
+      case 'COMPLETED':
+      case 'DELIVERED':
+        localStatus = 'Delivered';
+
+        await this.orderRepo.update(
+          {
+            id: shippingRecord.order_id,
+          },
+          {
+            status: 'Completed',
+          },
+        );
+
+        break;
+
+      case 'FAILED':
+      case 'CANCELED':
+      case 'CANCELLED':
+        localStatus = 'Canceled';
+        break;
+    }
+
+    if (
+      shippingRecord.status ===
+      localStatus
+    ) {
       return {
-        success: false,
-        message: error.message,
+        success: true,
+        message:
+          'Status unchanged',
       };
     }
+
+    const oldStatus =
+      shippingRecord.status;
+
+    shippingRecord.status =
+      localStatus;
+
+    shippingRecord.update_at =
+      new Date();
+
+    await this.shippingRepo.save(
+      shippingRecord,
+    );
+
+    /**
+     * Hoàn kho khi giao thất bại
+     */
+    if (
+      localStatus === 'Canceled' &&
+      oldStatus !== 'Canceled'
+    ) {
+      const orderDetails =
+        await this.orderDetailRepo.find({
+          where: {
+            order_id:
+              shippingRecord.order_id,
+          },
+        });
+
+      for (const item of orderDetails) {
+        await this.variantRepo.increment(
+          {
+            id: item.variant_id,
+          },
+          'quantity',
+          item.quantity,
+        );
+      }
+
+      await this.orderRepo.update(
+        {
+          id: shippingRecord.order_id,
+        },
+        {
+          status: 'ShippingFailed',
+        },
+      );
+
+      console.log(
+        `[Webhook] Inventory restored for order ${shippingRecord.order_id}`,
+      );
+    }
+
+    console.log(
+      `[Webhook] ${orderId} -> ${localStatus}`,
+    );
+
+    return {
+      success: true,
+    };
+  } catch (error: any) {
+    console.log(
+      '===== WEBHOOK ERROR =====',
+    );
+
+    console.log(
+      error.message,
+    );
+
+    return {
+      success: false,
+      message: error.message,
+    };
   }
+}
 
   async processAhamoveCheckout(
     orderId: string,
@@ -666,228 +711,398 @@ export class ShippingService {
     const PICK_MOBILE = '0822030768';
 
     try {
+
       /*
       =====================================
       0. GET ORDER
       =====================================
       */
+
       console.log('[STEP 0] Fetch order...');
 
       const order = await this.orderRepo.findOne({
-        where: { id: orderId },
-        relations: ['orderDetails', 'orderDetails.variant'],
+        where: {
+          id: orderId,
+        },
+        relations: [
+          'orderDetails',
+          'orderDetails.variant',
+        ],
       });
 
-      console.log('[STEP 0] ORDER RESULT:', order ? 'FOUND' : 'NOT FOUND');
-
-      if (!order) {
-        throw new BadRequestException(`Order ${orderId} không tồn tại`);
-      }
-
-      /*
-      =====================================
-      1. PROVIDER
-      =====================================
-      */
-      console.log('[STEP 1] Provider lookup...');
-
-      const providerCode = 'AHAMOVE';
-
-      let provider = await this.providersService
-        .findByCode(providerCode)
-        .catch((err) => {
-          console.log('[STEP 1] Provider find error:', err);
-          return null;
-        });
-
-      if (!provider) {
-        console.log('[STEP 1] Provider not found → creating...');
-
-        provider = await this.providersService.create({
-          id: providerId || 'AHAMOVE',
-          name: 'Ahamove',
-          code: providerCode,
-          status: 'Active',
-        } as any);
-      }
-
-      console.log('[STEP 1] Provider:', provider);
-
-      /*
-      =====================================
-      2. SERVICE
-      =====================================
-      */
-      console.log('[STEP 2] Service resolve...');
-
-      const serviceCode = extraPayload.service_id || 'SGN-BIKE';
-
-      let service = await this.servicesService
-        .findByCode(serviceCode)
-        .catch((err) => {
-          console.log('[STEP 2] Service find error:', err);
-          return null;
-        });
-
-      if (!service) {
-        console.log('[STEP 2] Service not found → creating...');
-
-        service = await this.servicesService.create({
-          id: serviceId || serviceCode,
-          name: serviceCode,
-          service_code: serviceCode,
-          status: 'Active',
-        } as any);
-      }
-
-      console.log('[STEP 2] Service:', service);
-
-      /*
-      =====================================
-      3. BUILD ITEMS
-      =====================================
-      */
-      console.log('[STEP 3] Build items...');
-
-      const items = order.orderDetails.map((detail: any) => ({
-        productId: detail.product_id,
-        variantId: detail.product_variant_id,
-        code: detail.code,
-        name: detail.variant?.name || detail.name,
-        color: detail.color,
-        quantity: detail.quantity,
-        price: Number(detail.price),
-        total: Number(detail.price) * detail.quantity,
-      }));
-
-      console.log('[STEP 3] ITEMS:', JSON.stringify(items, null, 2));
-
-      /*
-      =====================================
-      4. COD
-      =====================================
-      */
-      const codAmount = order.orderDetails.reduce(
-        (total: number, item: any) =>
-          total + Number(item.price) * Number(item.quantity),
-        0,
+      console.log(
+        '[STEP 0] ORDER RESULT:',
+        order ? 'FOUND' : 'NOT FOUND',
       );
 
-      console.log('[STEP 4] COD:', codAmount);
+      if (!order) {
+        throw new BadRequestException(
+          `Order ${orderId} không tồn tại`,
+        );
+      }
+
+      if (!order.ref_id) {
+        throw new BadRequestException(
+          'Order chưa có ref_id',
+        );
+      }
 
       /*
       =====================================
-      5. BUILD AHAMOVE PAYLOAD
+      1. VALIDATE
       =====================================
       */
-      console.log('[STEP 5] Build Ahamove payload...');
+
+      if (!extraPayload.drop_mobile) {
+        throw new BadRequestException(
+          'drop_mobile is required',
+        );
+      }
+
+      if (!extraPayload.drop_name) {
+        throw new BadRequestException(
+          'drop_name is required',
+        );
+      }
+
+      /*
+      =====================================
+      2. GET ADDRESS FROM VIETMAP
+      =====================================
+      */
+
+      console.log(
+        '[STEP 2] Get address from VietMap...',
+      );
+
+      console.log(
+        '[STEP 2] USING ORDER REF_ID:',
+        order.ref_id,
+      );
+
+      const placeResponse =
+        await axios.get(
+          'https://maps.vietmap.vn/api/place/v3',
+          {
+            params: {
+              apikey:
+                process.env.VIETMAP_API_KEY,
+              refid:
+                order.ref_id,
+            },
+          },
+        );
+
+      const place =
+        placeResponse.data;
+
+      if (!place) {
+        throw new BadRequestException(
+          'Không tìm thấy địa chỉ',
+        );
+      }
+
+      const dropAddress =
+        place.display ||
+        place.address;
+
+      const dropLat = Number(
+        place.lat,
+      );
+
+      const dropLng = Number(
+        place.lng,
+      );
+
+      console.log(
+        '[STEP 2] VIETMAP RESULT:',
+        {
+          dropAddress,
+          dropLat,
+          dropLng,
+        },
+      );
+
+      /*
+      =====================================
+      3. PROVIDER
+      =====================================
+      */
+
+      console.log(
+        '[STEP 3] Provider lookup...',
+      );
+
+      const providerCode =
+        'AHAMOVE';
+
+      let provider =
+        await this.providersService
+          .findByCode(providerCode)
+          .catch(() => null);
+
+      if (!provider) {
+        provider =
+          await this.providersService.create(
+            {
+              id:
+                providerId ||
+                'AHAMOVE',
+              name: 'Ahamove',
+              code:
+                providerCode,
+              status:
+                'Active',
+            } as any,
+          );
+      }
+
+      /*
+      =====================================
+      4. SERVICE
+      =====================================
+      */
+
+      const serviceCode =
+        extraPayload.service_id ||
+        'SGN-BIKE';
+
+      let service =
+        await this.servicesService
+          .findByCode(
+            serviceCode,
+          )
+          .catch(() => null);
+
+      if (!service) {
+        service =
+          await this.servicesService.create(
+            {
+              id:
+                serviceId ||
+                serviceCode,
+              name:
+                serviceCode,
+              service_code:
+                serviceCode,
+              status:
+                'Active',
+            } as any,
+          );
+      }
+
+      /*
+      =====================================
+      5. BUILD ITEMS
+      =====================================
+      */
+
+      const items =
+        order.orderDetails.map(
+          (detail: any) => ({
+            productId:
+              detail.product_id,
+
+            variantId:
+              detail.product_variant_id,
+
+            code:
+              detail.code,
+
+            name:
+              detail.variant?.name ||
+              detail.name,
+
+            color:
+              detail.color,
+
+            quantity:
+              detail.quantity,
+
+            price:
+              Number(
+                detail.price,
+              ),
+
+            total:
+              Number(
+                detail.price,
+              ) *
+              detail.quantity,
+          }),
+        );
+
+      /*
+      =====================================
+      6. PRODUCT AMOUNT
+      =====================================
+      */
+
+      const codAmount =
+        Number(order.total || 0) -
+        Number(order.extra_fee || 0);
+
+      console.log(
+        '[STEP 6] PRODUCT AMOUNT:',
+        codAmount,
+      );
+
+      /*
+      =====================================
+      7. BUILD AHAMOVE PAYLOAD
+      =====================================
+      */
 
       const ahamovePayload = {
         order_time: 0,
+
         path: [
           {
-            address: PICK_ADDRESS,
-            mobile: PICK_MOBILE,
-            name: 'TrueLook Store',
+            address:
+              PICK_ADDRESS,
+
+            mobile:
+              PICK_MOBILE,
+
+            name:
+              'TrueLook Store',
+
+            lat:
+              10.847706,
+
+            lng:
+              106.83636,
           },
+
           {
-            address: extraPayload.drop_address,
-            mobile: extraPayload.drop_mobile,
-            name: extraPayload.drop_name,
-            cod: codAmount,
+            address:
+              dropAddress,
+
+            mobile:
+              extraPayload.drop_mobile,
+
+            name:
+              extraPayload.drop_name,
+
+            lat:
+              dropLat,
+
+            lng:
+              dropLng,
           },
         ],
-        service_id: serviceCode,
-        payment_method: extraPayload.payment_method || 'CASH',
-        remarks: extraPayload.remarks || '',
-        promo_code: extraPayload.promo_code || '',
+
+        service_id:
+          serviceCode,
+
+        payment_method:
+          extraPayload.payment_method ||
+          'CASH',
+
+        remarks:
+          extraPayload.remarks ||
+          '',
+
+        promo_code:
+          extraPayload.promo_code ||
+          '',
+
         requests: [],
+
         group_requests: [],
+
         items,
       };
 
-      console.log(
-        '[STEP 5] AHAMOVE PAYLOAD:',
-        JSON.stringify(ahamovePayload, null, 2),
-      );
+      const ahamoveResult =
+        await this.createAhamoveOrder(
+          ahamovePayload,
+        );
 
-      /*
-      =====================================
-      6. CREATE ORDER AHAMOVE
-      =====================================
-      */
-      console.log('[STEP 6] Calling Ahamove API...');
+      const shipping =
+        this.shippingRepo.create({
+          id: String(
+            Date.now(),
+          ),
 
-      let ahamoveResult;
+          order_id:
+            orderId,
 
-      try {
-        ahamoveResult = await this.createAhamoveOrder(ahamovePayload);
+          provider_id:
+            provider.id,
 
-        console.log('[STEP 6] AHAMOVE RESPONSE SUCCESS:');
-        console.log(JSON.stringify(ahamoveResult, null, 2));
-      } catch (err) {
-        console.log('[STEP 6] AHAMOVE ERROR:');
-        console.log(err?.response?.data || err.message || err);
+          service_id:
+            service.id,
 
-        throw err;
-      }
+          status:
+            'Pending',
 
-      /*
-      =====================================
-      7. SAVE SHIPPING
-      =====================================
-      */
-      console.log('[STEP 7] Saving shipping...');
+          ship_fee:
+            ahamoveResult?.raw
+              ?.order
+              ?.total_price ||
+            ahamoveResult?.raw
+              ?.order
+              ?.partner_pay ||
+            0,
 
-      const shippingId = String(Date.now());
+          cod_amount:
+            codAmount,
 
-      const newShipping = this.shippingRepo.create({
-        id: shippingId,
-        order_id: orderId,
-        provider_id: provider.id,
-        service_id: service.id,
-        status: 'Pending',
-        ship_fee: ahamoveResult?.price || 0,
-        cod_amount: codAmount,
-        ahamove_id: String(ahamoveResult?.order_id || ''),
-        tracking_url: ahamoveResult?.shared_link,
-        create_at: new Date(),
-        update_at: new Date(),
-      } as any);
+          ahamove_id:
+            String(
+              ahamoveResult?.order_id ||
+              '',
+            ),
 
-      console.log('[STEP 7] SHIPPING ENTITY:', newShipping);
+          nhanh_id:
+            String(
+              ahamoveResult?.order_id ||
+              '',
+            ),
 
-      const savedShipping = await this.shippingRepo.save(newShipping);
+          tracking_url:
+            ahamoveResult?.shared_link,
 
-      console.log('[STEP 7] SHIPPING SAVED SUCCESS:', savedShipping);
+          create_at:
+            new Date(),
 
-      /*
-      =====================================
-      8. RETURN
-      =====================================
-      */
-      console.log('[STEP 8] DONE SUCCESS');
+          update_at:
+            new Date(),
+        } as any);
+
+      const savedShipping =
+        await this.shippingRepo.save(
+          shipping,
+        );
 
       return {
         success: true,
-        ahamove_order: ahamoveResult,
-        shipping: savedShipping,
+        ahamove_order:
+          ahamoveResult,
+        shipping:
+          savedShipping,
       };
-    } catch (error) {
-      console.log('==============================');
-      console.log('[AHAMOVE CHECKOUT ERROR]');
-      console.log(error?.response?.data || error.message || error);
-      console.log('==============================');
+
+    } catch (error: any) {
+      console.log(
+        '[AHAMOVE CHECKOUT ERROR]',
+      );
+
+      console.log(
+        error?.response?.data ||
+        error?.message ||
+        error,
+      );
 
       throw error;
     }
   }
 
+
   async estimateAhamoveFee(
-    orderId: string,
     extraPayload: any,
   ) {
-
     const PICK_ADDRESS =
       'Tòa Bs16, 88 Phước Thiện, Khu phố 29, Long Bình, Hồ Chí Minh 71300, Việt Nam';
 
@@ -898,22 +1113,117 @@ export class ShippingService {
 
       /*
       =====================================
-      GET ORDER
+      VALIDATE INPUT
       =====================================
       */
 
-      const order =
-        await this.orderRepo.findOne({
-          where: { id: orderId },
-          relations: [
-            'orderDetails',
-            'orderDetails.variant',
-          ],
-        });
-
-      if (!order) {
+      if (
+        !extraPayload.cart_item_ids ||
+        !Array.isArray(
+          extraPayload.cart_item_ids,
+        ) ||
+        !extraPayload.cart_item_ids.length
+      ) {
         throw new BadRequestException(
-          `Order ${orderId} không tồn tại`,
+          'cart_item_ids is required',
+        );
+      }
+
+      if (!extraPayload.ref_id) {
+        throw new BadRequestException(
+          'ref_id is required',
+        );
+      }
+
+      if (!extraPayload.drop_mobile) {
+        throw new BadRequestException(
+          'drop_mobile is required',
+        );
+      }
+
+      if (!extraPayload.drop_name) {
+        throw new BadRequestException(
+          'drop_name is required',
+        );
+      }
+
+      if (
+        !/^0\d{9}$/.test(
+          extraPayload.drop_mobile,
+        )
+      ) {
+        throw new BadRequestException(
+          'Số điện thoại không hợp lệ',
+        );
+      }
+
+      /*
+      =====================================
+      GET ADDRESS FROM VIETMAP
+      =====================================
+      */
+
+      const placeResponse =
+        await axios.get(
+          'https://maps.vietmap.vn/api/place/v3',
+          {
+            params: {
+              apikey:
+                process.env.VIETMAP_API_KEY,
+              refid:
+                extraPayload.ref_id,
+            },
+          },
+        );
+
+      const place =
+        placeResponse.data;
+
+      if (!place) {
+        throw new BadRequestException(
+          'Không tìm thấy địa chỉ từ ref_id',
+        );
+      }
+
+      const dropAddress =
+        place.display ||
+        place.address;
+
+      const dropLat = Number(
+        place.lat,
+      );
+
+      const dropLng = Number(
+        place.lng,
+      );
+
+      /*
+      =====================================
+      GET CART ITEMS
+      =====================================
+      */
+
+      const cartItems =
+        await this.cartItemRepo
+          .createQueryBuilder(
+            'cartItem',
+          )
+          .leftJoinAndSelect(
+            'cartItem.variant',
+            'variant',
+          )
+          .where(
+            'cartItem.id IN (:...ids)',
+            {
+              ids:
+                extraPayload.cart_item_ids,
+            },
+          )
+          .getMany();
+
+      if (!cartItems.length) {
+        throw new BadRequestException(
+          'Không tìm thấy cart items',
         );
       }
 
@@ -923,103 +1233,71 @@ export class ShippingService {
       =====================================
       */
 
-      const items =
-        order.orderDetails.map(
-          (detail: any, index: number) => ({
+      const items = cartItems.map(
+        (
+          item: any,
+          index: number,
+        ) => ({
+          _id: String(index + 1),
 
-            _id:
-              String(index + 1),
+          name:
+            item.variant?.name ||
+            'Product',
 
-            name:
-              detail.variant?.name ||
-              'Product',
+          price: Number(
+            item.variant?.price || 0,
+          ),
 
-            price:
-              Number(detail.price),
-
-            num:
-              Number(detail.quantity),
-          }),
-        );
-
-      /*
-      =====================================
-      COD
-      =====================================
-      */
-
-      const codAmount =
-        order.orderDetails.reduce(
-          (
-            total: number,
-            item: any,
-          ) =>
-            total +
-            Number(item.price) *
-            Number(item.quantity),
-
-          0,
-        );
+          num: Number(
+            item.quantity,
+          ),
+        }),
+      );
 
       /*
       =====================================
-      ESTIMATE PAYLOAD
+      BUILD AHAMOVE PAYLOAD
       =====================================
       */
 
       const payload = {
-
         order_time: 0,
 
         path: [
-
           {
             address:
               PICK_ADDRESS,
 
-            name:
-              'TrueLook Store',
-
             mobile:
               PICK_MOBILE,
 
-            /*
-            NÊN CÓ LAT LNG
-            */
+            name:
+              'TrueLook Store',
 
             lat:
-              10.841667,
+              10.847706,
 
             lng:
-              106.809167,
+              106.83636,
           },
 
           {
             address:
-              extraPayload.drop_address,
-
-            name:
-              extraPayload.drop_name,
+              dropAddress,
 
             mobile:
               extraPayload.drop_mobile,
 
-            cod:
-              codAmount,
+            name:
+              extraPayload.drop_name,
 
             lat:
-              extraPayload.lat,
+              dropLat,
 
             lng:
-              extraPayload.lng,
+              dropLng,
           },
         ],
-
-        /*
-        =====================================
-        QUAN TRỌNG NHẤT
-        =====================================
-        */
 
         services: [
           {
@@ -1036,25 +1314,20 @@ export class ShippingService {
           'CASH',
 
         remarks:
-          extraPayload.remarks || '',
+          extraPayload.remarks ||
+          '',
 
         items,
       };
 
       /*
       =====================================
-      AUTH
+      CALL AHAMOVE
       =====================================
       */
 
       const headers =
         await this.getAhamoveAuthHeaders();
-
-      /*
-      =====================================
-      URL
-      =====================================
-      */
 
       const url =
         this.ahamoveUrl(
@@ -1073,37 +1346,50 @@ export class ShippingService {
         ),
       );
 
-      /*
-      =====================================
-      API CALL
-      =====================================
-      */
-
       const response =
         await axios.post(
           url,
           payload,
-          { headers },
+          {
+            headers,
+          },
         );
 
-      console.log(
-        '===== ESTIMATE SUCCESS =====',
-      );
+      const estimateData =
+        response.data?.[0]?.data;
 
-      console.log(
-        JSON.stringify(
-          response.data,
-          null,
-          2,
-        ),
-      );
+      if (!estimateData) {
+        throw new BadRequestException(
+          'Không lấy được phí vận chuyển',
+        );
+      }
 
       return {
         success: true,
-        estimate_payload: payload,
-        estimate_result: response.data,
-      };
 
+        shipping_fee:
+          estimateData.total_price || 0,
+
+        distance:
+          estimateData.distance || 0,
+
+        duration:
+          estimateData.duration || 0,
+
+        drop_address:
+          dropAddress,
+
+        lat:
+          dropLat,
+
+        lng:
+          dropLng,
+
+        items,
+
+        estimate_result:
+          response.data,
+      };
     } catch (error: any) {
 
       console.log(
@@ -1125,6 +1411,35 @@ export class ShippingService {
     }
   }
 
+  async autocompleteAddress(
+    extraPayload: any,
+  ) {
+    if (!extraPayload?.text) {
+      throw new BadRequestException(
+        'text is required',
+      );
+    }
+
+    const response =
+      await axios.get(
+        'https://maps.vietmap.vn/api/autocomplete/v4',
+        {
+          params: {
+            apikey:
+              process.env.VIETMAP_API_KEY,
+            text:
+              extraPayload.text,
+            display_type: 5,
+          },
+        },
+      );
+
+    return {
+      success: true,
+      results:
+        response.data,
+    };
+  }
   // Service của giao hàng nhanh 
   async create(dto: CreateShippingDto): Promise<Shipping> {
     const newShipping = this.shippingRepo.create(dto);

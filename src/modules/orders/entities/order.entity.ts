@@ -36,6 +36,14 @@ export class Order {
   })
   create_at: Date;
 
+  @Column({
+    name: 'ref_id',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  ref_id: string;
+
   @ManyToOne(() => User)
   @JoinColumn({ name: 'customer_id', referencedColumnName: 'id' })
   customer: User;
@@ -60,5 +68,5 @@ export class Order {
     default: 'Pending'
   })
   status: string;
-  
+
 }
