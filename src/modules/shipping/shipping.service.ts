@@ -529,10 +529,9 @@ export class ShippingService {
         };
       }
 
-      const status =
-        String(rawStatus)
-          .trim()
-          .toUpperCase();
+      const status = String(rawStatus)
+        .trim()
+        .toUpperCase();
 
       let localStatus =
         shippingRecord.status;
@@ -582,6 +581,9 @@ export class ShippingService {
         };
       }
 
+      const oldStatus =
+        shippingRecord.status;
+
       shippingRecord.status =
         localStatus;
 
@@ -591,6 +593,37 @@ export class ShippingService {
       await this.shippingRepo.save(
         shippingRecord,
       );
+
+      /**
+       * Hoàn lại tồn kho nếu giao hàng thất bại
+       * Chỉ chạy 1 lần khi chuyển sang Canceled
+       */
+      if (
+        localStatus === 'Canceled' &&
+        oldStatus !== 'Canceled'
+      ) {
+        const orderDetails =
+          await this.orderDetailRepo.find({
+            where: {
+              order_id:
+                shippingRecord.order_id,
+            },
+          });
+
+        for (const item of orderDetails) {
+          await this.variantRepo.increment(
+            {
+              id: item.variant_id,
+            },
+            'quantity',
+            item.quantity,
+          );
+        }
+
+        console.log(
+          `[Webhook] Inventory restored for order ${shippingRecord.order_id}`,
+        );
+      }
 
       console.log(
         `[Webhook] ${orderId} -> ${localStatus}`,

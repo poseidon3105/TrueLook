@@ -59,7 +59,7 @@ export class PaymentsService {
 
   }
 
- 
+
   private async validatePromotion(order: Order, promotion: Promotion) {
 
     const now = new Date();
@@ -82,7 +82,7 @@ export class PaymentsService {
     return true;
   }
 
-  
+
   private calculateDiscount(orderTotal: number, promotion: Promotion): number {
 
     let discount = Number(promotion.discount);
@@ -94,7 +94,7 @@ export class PaymentsService {
     return discount;
   }
 
-  
+
   async createPayment(orderId: string, promotionId?: string) {
 
     const order = await this.orderRepo.findOne({
@@ -105,7 +105,7 @@ export class PaymentsService {
       throw new NotFoundException("Order not found");
     }
 
-    
+
     const existingPayment = await this.paymentRepo.findOne({
       where: {
         order_id: orderId,
@@ -125,7 +125,7 @@ export class PaymentsService {
 
     let discount = 0;
 
-    
+
     if (promotionId) {
 
       const promotion = await this.promotionRepo.findOne({
@@ -142,18 +142,18 @@ export class PaymentsService {
 
     }
 
-    
+
     const finalAmount = totalAmount - discount;
 
     if (finalAmount < 0) {
       throw new Error("Invalid final amount");
     }
 
-    
+
     order.total = finalAmount;
     await this.orderRepo.save(order);
 
-    
+
     if (finalAmount === 0) {
 
       await this.ordersService.confirmOrder(orderId);
@@ -167,10 +167,10 @@ export class PaymentsService {
 
     }
 
-    
+
     const orderCode = Date.now() + Math.floor(Math.random() * 1000);
 
-    
+
     const payment = this.paymentRepo.create({
       id: orderCode.toString(),
       order_id: orderId,
@@ -181,7 +181,7 @@ export class PaymentsService {
 
     await this.paymentRepo.save(payment);
 
-    
+
     const body = {
       orderCode: orderCode,
       amount: finalAmount,
@@ -211,55 +211,82 @@ export class PaymentsService {
 
   }
 
-  
-  async handleWebhook(body: any) {
 
+  async handleWebhook(body: any) {
     const data = await this.payOS.webhooks.verify(body);
 
-    if (data.code !== "00") {
-      this.logger.warn("Payment not successful");
+    if (data.code !== '00') {
+      this.logger.warn('Payment not successful');
       return;
     }
 
     const paymentId = data.orderCode.toString();
 
-    const payment = await this.paymentRepo.findOne({
-      where: { id: paymentId }
+    await this.dataSource.transaction(async (manager) => {
+
+      const payment = await manager.findOne(Payment, {
+        where: { id: paymentId },
+      });
+
+      if (!payment) {
+        throw new Error('Payment not found');
+      }
+
+      if (payment.status === 'Completed') {
+        this.logger.log('Payment already processed');
+        return;
+      }
+
+      const orderDetails = await manager.find(OrderDetail, {
+        where: {
+          order_id: payment.order_id,
+        },
+      });
+
+      for (const item of orderDetails) {
+
+        const variant = await manager.findOne(ProductVariant, {
+          where: {
+            id: item.variant_id,
+          },
+        });
+
+        if (!variant) {
+          throw new Error(
+            `Product variant ${item.variant_id} not found`,
+          );
+        }
+
+        if (variant.quantity < item.quantity) {
+          throw new Error(
+            `Not enough stock for variant ${variant.name}`,
+          );
+        }
+
+        variant.quantity -= item.quantity;
+
+        await manager.save(variant);
+      }
+
+      payment.status = 'Completed';
+      payment.payment_date = new Date();
+
+      await manager.save(payment);
+
+      const transition = manager.create(Transition, {
+        id: Date.now().toString(),
+        payment_id: payment.id,
+        transition_payment: data.reference,
+        create_at: new Date(),
+        update_time: new Date(),
+      });
+
+      await manager.save(transition);
+
+      await this.ordersService.confirmOrder(payment.order_id);
+
+      this.logger.log(`Payment success ${payment.id}`);
     });
-
-    if (!payment) {
-      this.logger.warn("Payment not found");
-      return;
-    }
-
-    
-    if (payment.status === "Completed") {
-      this.logger.log("Payment already processed");
-      return;
-    }
-
-    payment.status = "Completed";
-    payment.payment_date = new Date();
-
-    await this.paymentRepo.save(payment);
-
-   
-    const transition = this.transitionRepo.create({
-      id: Date.now().toString(),
-      payment_id: payment.id,
-      transition_payment: data.reference,
-      create_at: new Date(),
-      update_time: new Date(),
-    });
-
-    await this.transitionRepo.save(transition);
-
-    
-    await this.ordersService.confirmOrder(payment.order_id);
-
-    this.logger.log(`Payment success ${payment.id}`);
-
   }
-
 
 }
