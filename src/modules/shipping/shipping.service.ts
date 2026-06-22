@@ -501,271 +501,224 @@ export class ShippingService {
     }
   }
 
-  async handleAhamoveWebhook(
-    payload: any,
-  ) {
+  async handleAhamoveWebhook(payload: any) {
+    const traceId = `AHM_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    console.log(`\n================ WEBHOOK START [${traceId}] ================`);
+
     try {
-      console.log(
-        '===== AHAMOVE WEBHOOK =====',
-      );
+      console.log(`[${traceId}] RAW PAYLOAD:`);
+      console.log(JSON.stringify(payload, null, 2));
 
-      console.log(
-        JSON.stringify(
-          payload,
-          null,
-          2,
-        ),
-      );
+      const order = payload?.order || payload?.data || payload;
 
-      const order =
-        payload?.order ||
-        payload?.data ||
-        payload;
+      const orderId = order?._id || order?.id || order?.order_id;
+      const rawStatus = order?.status;
 
-      const orderId =
-        order?._id ||
-        order?.id ||
-        order?.order_id;
-
-      const rawStatus =
-        order?.status;
+      console.log(`[${traceId}] PARSED ORDER:`, {
+        orderId,
+        rawStatus,
+      });
 
       if (!orderId || !rawStatus) {
-        return {
-          success: false,
-          message:
-            'Missing orderId/status',
-        };
+        console.log(`[${traceId}] INVALID PAYLOAD (missing orderId/status)`);
+        return { success: false, message: 'Missing orderId/status' };
       }
 
-      const shippingRecord =
-        await this.shippingRepo.findOne({
-          where: {
-            ahamove_id:
-              String(orderId),
-          } as any,
-        });
+      // =========================
+      // FIND SHIPPING (FIX HERE)
+      // =========================
+      const shippingRecord = await this.shippingRepo.findOne({
+        where: {
+          nhanh_id: String(orderId),
+        } as any,
+      });
 
       if (!shippingRecord) {
-        console.log(
-          '[Webhook] shipping not found:',
-          orderId,
-        );
-
-        return {
-          success: true,
-        };
+        console.log(`[${traceId}] SHIPPING NOT FOUND: nhanh_id=${orderId}`);
+        return { success: true };
       }
 
-      const status =
-        String(rawStatus)
-          .trim()
-          .toUpperCase();
+      console.log(`[${traceId}] SHIPPING BEFORE:`, {
+        id: shippingRecord.id,
+        order_id: shippingRecord.order_id,
+        nhanh_id: shippingRecord.nhanh_id,
+        status: shippingRecord.status,
+      });
 
-      const oldStatus =
-        shippingRecord.status;
+      const status = String(rawStatus).trim().toUpperCase();
+      const oldStatus = shippingRecord.status;
 
-      let localStatus =
-        shippingRecord.status;
+      let localStatus = shippingRecord.status;
 
+      console.log(`[${traceId}] STATUS TRANSITION:`, {
+        oldStatus,
+        rawStatus,
+        normalized: status,
+      });
+
+      // =========================
+      // MAP STATUS
+      // =========================
       switch (status) {
-        /**
-         * Chờ tài xế nhận
-         */
         case 'ASSIGNING':
-          localStatus =
-            'Pending';
+          localStatus = 'Pending';
+          console.log(`[${traceId}] -> Pending`);
           break;
 
-        /**
-         * Tài xế đã nhận đơn
-         */
         case 'ACCEPTED':
-          localStatus =
-            'ReadyToPick';
+          localStatus = 'ReadyToPick';
+          console.log(`[${traceId}] -> ReadyToPick`);
           break;
 
-        /**
-         * Đang lấy hàng / giao hàng
-         */
         case 'PICKING':
         case 'PICKED_UP':
         case 'DELIVERING':
         case 'ON_GOING':
-          localStatus =
-            'Delivering';
+          localStatus = 'Delivering';
+          console.log(`[${traceId}] -> Delivering`);
 
           await this.orderRepo.update(
-            {
-              id:
-                shippingRecord.order_id,
-            },
-            {
-              status:
-                'Process',
-              update_at:
-                new Date(),
-            } as any,
+            { id: shippingRecord.order_id },
+            { status: 'Process', update_at: new Date() } as any,
           );
 
+          console.log(`[${traceId}] ORDER -> Process`);
           break;
 
-        /**
-         * Giao thành công
-         */
         case 'COMPLETED':
         case 'DELIVERED':
-          localStatus =
-            'Delivered';
+          localStatus = 'Delivered';
+          console.log(`[${traceId}] -> Delivered`);
 
           await this.orderRepo.update(
-            {
-              id:
-                shippingRecord.order_id,
-            },
-            {
-              status:
-                'Completed',
-              update_at:
-                new Date(),
-            } as any,
+            { id: shippingRecord.order_id },
+            { status: 'Completed', update_at: new Date() } as any,
           );
 
+          console.log(`[${traceId}] ORDER -> Completed`);
           break;
 
-        /**
-         * Giao thất bại / hủy / trả hàng
-         */
         case 'FAILED':
         case 'CANCELED':
         case 'CANCELLED':
         case 'RETURNING':
         case 'RETURNED':
         case 'DELIVERY_FAILED':
-          localStatus =
-            'Canceled';
+          localStatus = 'Canceled';
+          console.log(`[${traceId}] -> Canceled`);
           break;
 
         default:
-          console.log(
-            '[Webhook] Unknown status:',
-            status,
-          );
-
-          return {
-            success: true,
-            message:
-              'Unknown status',
-          };
+          console.log(`[${traceId}] UNKNOWN STATUS:`, status);
+          return { success: true, message: 'Unknown status' };
       }
 
-      /**
-       * Không thay đổi trạng thái
-       */
-      if (
-        oldStatus ===
-        localStatus
-      ) {
-        return {
-          success: true,
-          message:
-            'Status unchanged',
-        };
+      console.log(`[${traceId}] LOCAL STATUS:`, localStatus);
+
+      // =========================
+      // NO CHANGE CHECK
+      // =========================
+      if (oldStatus === localStatus) {
+        console.log(`[${traceId}] SKIP (status unchanged)`);
+        return { success: true, message: 'Status unchanged' };
       }
 
-      /**
-       * Update shipping
-       */
-      shippingRecord.status =
-        localStatus;
+      // =========================
+      // UPDATE SHIPPING
+      // =========================
+      shippingRecord.status = localStatus;
+      shippingRecord.update_at = new Date();
 
-      shippingRecord.update_at =
-        new Date();
+      await this.shippingRepo.save(shippingRecord);
 
-      await this.shippingRepo.save(
-        shippingRecord,
-      );
+      console.log(`[${traceId}] SHIPPING UPDATED`);
 
-      /**
-       * Hoàn kho nếu đơn bị hủy
-       * Chỉ chạy 1 lần
-       */
-      if (
-        localStatus ===
-        'Canceled' &&
-        oldStatus !==
-        'Canceled'
-      ) {
+      // =========================
+      // RESTORE INVENTORY
+      // =========================
+      const shouldRestore =
+        localStatus === 'Canceled' && oldStatus !== 'Canceled';
+
+      console.log(`[${traceId}] RESTORE CHECK:`, {
+        shouldRestore,
+        oldStatus,
+        localStatus,
+      });
+
+      if (shouldRestore) {
         console.log(
-          `[Webhook] Restoring inventory for order ${shippingRecord.order_id}`,
+          `[${traceId}] RESTORE INVENTORY FOR ORDER: ${shippingRecord.order_id}`,
         );
 
-        const orderDetails =
-          await this.orderDetailRepo.find(
-            {
-              where: {
-                order_id:
-                  shippingRecord.order_id,
-              },
-            },
-          );
+        const orderDetails = await this.orderDetailRepo.find({
+          where: {
+            order_id: shippingRecord.order_id,
+          },
+        });
+
+        console.log(
+          `[${traceId}] ORDER DETAILS COUNT:`,
+          orderDetails.length,
+        );
+
+        if (!orderDetails.length) {
+          console.log(`[${traceId}] WARNING: EMPTY ORDER DETAILS`);
+        }
 
         for (const item of orderDetails) {
+          console.log(`[${traceId}] RESTORE ITEM:`, {
+            variant_id: item.variant_id,
+            quantity: item.quantity,
+          });
+
           await this.variantRepo.increment(
-            {
-              id:
-                item.variant_id,
-            },
+            { id: item.variant_id },
             'quantity',
             item.quantity,
           );
 
           console.log(
-            `[Webhook] Variant ${item.variant_id} +${item.quantity}`,
+            `[${traceId}] VARIANT RESTORED +${item.quantity}`,
           );
         }
 
         await this.orderRepo.update(
+          { id: shippingRecord.order_id },
           {
-            id:
-              shippingRecord.order_id,
-          },
-          {
-            status:
-              'ShippingFailed',
-            update_at:
-              new Date(),
+            status: 'ShippingFailed',
+            update_at: new Date(),
           } as any,
         );
 
         console.log(
-          `[Webhook] Inventory restored for order ${shippingRecord.order_id}`,
+          `[${traceId}] ORDER -> ShippingFailed`,
         );
+
+        console.log(
+          `[${traceId}] INVENTORY RESTORE DONE`,
+        );
+      } else {
+        console.log(`[${traceId}] SKIP INVENTORY RESTORE`);
       }
 
       console.log(
-        `[Webhook] ${orderId} => ${localStatus}`,
+        `================ WEBHOOK END [${traceId}] ================\n`,
       );
 
       return {
         success: true,
-        status:
-          localStatus,
+        status: localStatus,
       };
     } catch (error: any) {
       console.log(
-        '===== WEBHOOK ERROR =====',
+        `================ WEBHOOK ERROR [${traceId}] ================`,
       );
-
-      console.log(
-        error?.message ||
-        error,
-      );
+      console.log(error?.stack || error?.message || error);
 
       return {
         success: false,
-        message:
-          error?.message,
+        message: error?.message,
       };
     }
   }
