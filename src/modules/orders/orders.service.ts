@@ -2,7 +2,7 @@ import { Logger, Injectable, NotFoundException, BadRequestException } from '@nes
 import { InjectRepository } from '@nestjs/typeorm';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto, UpdateOrderStatusDto } from './dto/update-order.dto';
-import { Repository, DataSource,EntityManager } from 'typeorm';
+import { In,Repository, DataSource,EntityManager } from 'typeorm';
 
 import { Order } from './entities/order.entity';
 import { User } from '../users/entities/user.entity';
