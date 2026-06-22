@@ -327,15 +327,15 @@ export class PaymentsService {
         }
 
         // Payment
-        payment.status =
-          'Completed';
+        payment.status = 'Completed';
+        payment.payment_date = new Date();
 
-        payment.payment_date =
-          new Date();
+        await manager.save(payment);
 
-        await manager.save(
-          payment,
-        );
+        // Update order status
+        order.status = 'Confirmed';
+
+        await manager.save(order);
 
         // Transition
         const transition =
