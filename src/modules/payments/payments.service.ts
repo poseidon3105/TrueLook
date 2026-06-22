@@ -213,80 +213,260 @@ export class PaymentsService {
 
 
   async handleWebhook(body: any) {
-    const data = await this.payOS.webhooks.verify(body);
+    try {
+      this.logger.log(
+        '================ PAYOS WEBHOOK START ================',
+      );
 
-    if (data.code !== '00') {
-      this.logger.warn('Payment not successful');
-      return;
-    }
+      const data =
+        await this.payOS.webhooks.verify(body);
 
-    const paymentId = data.orderCode.toString();
+      this.logger.log(
+        `Webhook data: ${JSON.stringify(data, null, 2)}`,
+      );
 
-    await this.dataSource.transaction(async (manager) => {
-
-      const payment = await manager.findOne(Payment, {
-        where: { id: paymentId },
-      });
-
-      if (!payment) {
-        throw new Error('Payment not found');
-      }
-
-      if (payment.status === 'Completed') {
-        this.logger.log('Payment already processed');
+      if (data.code !== '00') {
+        this.logger.warn(
+          `Payment not successful. Code: ${data.code}`,
+        );
         return;
       }
 
-      const orderDetails = await manager.find(OrderDetail, {
-        where: {
-          order_id: payment.order_id,
+      const paymentId =
+        data.orderCode.toString();
+
+      this.logger.log(
+        `Payment ID: ${paymentId}`,
+      );
+
+      await this.dataSource.transaction(
+        async (manager) => {
+
+          this.logger.log(
+            'Transaction started',
+          );
+
+          const payment =
+            await manager.findOne(
+              Payment,
+              {
+                where: {
+                  id: paymentId,
+                },
+              },
+            );
+
+          this.logger.log(
+            `Payment found: ${JSON.stringify(payment, null, 2)}`,
+          );
+
+          if (!payment) {
+            throw new Error(
+              'Payment not found',
+            );
+          }
+
+          if (
+            payment.status ===
+            'Completed'
+          ) {
+            this.logger.log(
+              `Payment ${payment.id} already processed`,
+            );
+            return;
+          }
+
+          const orderDetails =
+            await manager.find(
+              OrderDetail,
+              {
+                where: {
+                  order_id:
+                    payment.order_id,
+                },
+              },
+            );
+
+          this.logger.log(
+            `Order Details Count: ${orderDetails.length}`,
+          );
+
+          this.logger.log(
+            `Order Details: ${JSON.stringify(
+              orderDetails,
+              null,
+              2,
+            )}`,
+          );
+
+          if (
+            orderDetails.length === 0
+          ) {
+            this.logger.warn(
+              `No order details found for order ${payment.order_id}`,
+            );
+          }
+
+          for (const item of orderDetails) {
+
+            this.logger.log(
+              `Processing Item:
+             DetailId=${item.id}
+             VariantId=${item.variant_id}
+             Quantity=${item.quantity}`,
+            );
+
+            const variant =
+              await manager.findOne(
+                ProductVariant,
+                {
+                  where: {
+                    id: item.variant_id,
+                  },
+                },
+              );
+
+            this.logger.log(
+              `Variant Found: ${JSON.stringify(
+                variant,
+                null,
+                2,
+              )}`,
+            );
+
+            if (!variant) {
+              throw new Error(
+                `Product variant ${item.variant_id} not found`,
+              );
+            }
+
+            this.logger.log(
+              `Before Update:
+             Variant=${variant.id}
+             Quantity=${variant.quantity}`,
+            );
+
+            if (
+              Number(
+                variant.quantity,
+              ) <
+              Number(item.quantity)
+            ) {
+              throw new Error(
+                `Not enough stock for variant ${variant.name}`,
+              );
+            }
+
+            variant.quantity =
+              Number(
+                variant.quantity,
+              ) -
+              Number(item.quantity);
+
+            this.logger.log(
+              `After Calculate:
+             Variant=${variant.id}
+             Quantity=${variant.quantity}`,
+            );
+
+            await manager.save(
+              variant,
+            );
+
+            const checkVariant =
+              await manager.findOne(
+                ProductVariant,
+                {
+                  where: {
+                    id: item.variant_id,
+                  },
+                },
+              );
+
+            this.logger.log(
+              `After Save DB:
+             Variant=${checkVariant?.id}
+             Quantity=${checkVariant?.quantity}`,
+            );
+          }
+
+          payment.status =
+            'Completed';
+
+          payment.payment_date =
+            new Date();
+
+          await manager.save(
+            payment,
+          );
+
+          this.logger.log(
+            `Payment updated:
+           Status=${payment.status}`,
+          );
+
+          const transition =
+            manager.create(
+              Transition,
+              {
+                id: Date.now().toString(),
+                payment_id:
+                  payment.id,
+                transition_payment:
+                  data.reference,
+                create_at:
+                  new Date(),
+                update_time:
+                  new Date(),
+              },
+            );
+
+          await manager.save(
+            transition,
+          );
+
+          this.logger.log(
+            `Transition created:
+           ${transition.id}`,
+          );
+
+          this.logger.log(
+            `Calling confirmOrder(${payment.order_id})`,
+          );
+
+          await this.ordersService.confirmOrder(
+            payment.order_id,
+          );
+
+          this.logger.log(
+            `confirmOrder finished`,
+          );
+
+          this.logger.log(
+            `Payment success ${payment.id}`,
+          );
         },
-      });
+      );
 
-      for (const item of orderDetails) {
+      this.logger.log(
+        '================ PAYOS WEBHOOK END ================',
+      );
+    } catch (error: any) {
 
-        const variant = await manager.findOne(ProductVariant, {
-          where: {
-            id: item.variant_id,
-          },
-        });
+      this.logger.error(
+        '================ PAYOS WEBHOOK ERROR ================',
+      );
 
-        if (!variant) {
-          throw new Error(
-            `Product variant ${item.variant_id} not found`,
-          );
-        }
+      this.logger.error(
+        error.message,
+      );
 
-        if (variant.quantity < item.quantity) {
-          throw new Error(
-            `Not enough stock for variant ${variant.name}`,
-          );
-        }
+      this.logger.error(
+        error.stack,
+      );
 
-        variant.quantity -= item.quantity;
-
-        await manager.save(variant);
-      }
-
-      payment.status = 'Completed';
-      payment.payment_date = new Date();
-
-      await manager.save(payment);
-
-      const transition = manager.create(Transition, {
-        id: Date.now().toString(),
-        payment_id: payment.id,
-        transition_payment: data.reference,
-        create_at: new Date(),
-        update_time: new Date(),
-      });
-
-      await manager.save(transition);
-
-      await this.ordersService.confirmOrder(payment.order_id);
-
-      this.logger.log(`Payment success ${payment.id}`);
-    });
+      throw error;
+    }
   }
 
 }
