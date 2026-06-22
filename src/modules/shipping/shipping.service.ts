@@ -599,14 +599,15 @@ export class ShippingService {
           console.log(`[${traceId}] ORDER -> Completed`);
           break;
 
+        case 'DELIVERY_FAILED':
         case 'FAILED':
         case 'CANCELED':
         case 'CANCELLED':
         case 'RETURNING':
         case 'RETURNED':
-        case 'DELIVERY_FAILED':
+        case 'CANCEL':
+        case 'REJECTED':
           localStatus = 'Canceled';
-          console.log(`[${traceId}] -> Canceled`);
           break;
 
         default:
