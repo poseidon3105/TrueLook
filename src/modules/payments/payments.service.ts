@@ -333,7 +333,7 @@ export class PaymentsService {
         await manager.save(payment);
 
         // Update order status
-        order.status = 'Confirmed';
+        order.status = 'Pending';
 
         await manager.save(order);
 
