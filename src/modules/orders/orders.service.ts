@@ -164,7 +164,7 @@ export class OrdersService {
       };
     }
 
-    order.status = 'Confirmed';
+    order.status = 'Pending';
 
     await em.save(order);
 
