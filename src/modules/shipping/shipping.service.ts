@@ -12,6 +12,7 @@ import { CreateShippingDto } from './dto/create-shipping.dto';
 import { UpdateShippingDto } from './dto/update-shipping.dto';
 import { ShippingProvidersService } from '../shipping_providers/shipping_providers.service';
 import { ShippingServicesService } from '../shipping_services/shipping_services.service';
+import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 
 @Injectable()
 export class ShippingService {
@@ -34,6 +35,9 @@ export class ShippingService {
 
     @InjectRepository(CartItem)
     private cartItemRepo: Repository<CartItem>,
+
+    @InjectRepository(ProductVariant)
+    private variantRepo: Repository<ProductVariant>,
   ) { }
 
   /*
@@ -497,182 +501,195 @@ export class ShippingService {
     }
   }
 
-  async handleAhamoveWebhook(
-    payload: any,
-  ) {
+  async handleAhamoveWebhook(payload: any) {
+  try {
     console.log(
-      'Webhook order:',
-      payload._id,
+      '===== AHAMOVE WEBHOOK =====',
     );
 
-    const shipping =
+    console.log(
+      JSON.stringify(payload, null, 2),
+    );
+
+    const order =
+      payload?.order ||
+      payload?.data ||
+      payload;
+
+    const orderId =
+      order?._id ||
+      order?.id ||
+      order?.order_id;
+
+    const rawStatus =
+      order?.status;
+
+    if (!orderId || !rawStatus) {
+      return {
+        success: false,
+        message:
+          'Missing orderId/status',
+      };
+    }
+
+    const shippingRecord =
       await this.shippingRepo.findOne({
         where: {
-          nhanh_id: payload._id,
-        },
+          ahamove_id: String(orderId),
+        } as any,
       });
 
-    console.log(
-      'Shipping found:',
-      shipping,
-    );
+    if (!shippingRecord) {
+      console.log(
+        '[Webhook] shipping not found:',
+        orderId,
+      );
 
-      const orderId =
-        order?._id ||
-        order?.id ||
-        order?.order_id;
+      return {
+        success: true,
+      };
+    }
 
-      const rawStatus =
-        order?.status;
+    const status = String(rawStatus)
+      .trim()
+      .toUpperCase();
 
-      if (!orderId || !rawStatus) {
-        return {
-          success: false,
-          message:
-            'Missing orderId/status',
-        };
-      }
+    let localStatus =
+      shippingRecord.status;
 
-      const shippingRecord =
-        await this.shippingRepo.findOne({
-          where: {
-            ahamove_id:
-              String(orderId),
-          } as any,
-        });
+    switch (status) {
+      case 'ASSIGNING':
+        localStatus = 'Pending';
+        break;
 
-      if (!shippingRecord) {
-        console.log(
-          '[Webhook] shipping not found:',
-          orderId,
-        );
+      case 'ACCEPTED':
+        localStatus = 'ReadyToPick';
+        break;
 
-        return {
-          success: true,
-        };
-      }
-
-      const status = String(rawStatus)
-        .trim()
-        .toUpperCase();
-
-      let localStatus =
-        shippingRecord.status;
-
-      switch (status) {
-        case 'ASSIGNING':
-          localStatus = 'Pending';
-          break;
-
-        case 'ACCEPTED':
-          localStatus =
-            'ReadyToPick';
-          break;
-
-      // tài xế đang tới lấy hàng
       case 'PICKING':
-
-      // đã lấy hàng
       case 'PICKED_UP':
-
-      // đang giao
       case 'DELIVERING':
+      case 'ON_GOING':
+        localStatus = 'Delivering';
 
         await this.orderRepo.update(
           {
-            id: shipping.order_id,
+            id: shippingRecord.order_id,
           },
           {
             status: 'Process',
           },
         );
 
-        console.log(
-          'Order updated -> Process',
+        break;
+
+      case 'COMPLETED':
+      case 'DELIVERED':
+        localStatus = 'Delivered';
+
+        await this.orderRepo.update(
+          {
+            id: shippingRecord.order_id,
+          },
+          {
+            status: 'Completed',
+          },
         );
 
         break;
 
-        case 'COMPLETED':
-        case 'DELIVERED':
-          localStatus =
-            'Delivered';
-          break;
-
-        case 'CANCELED':
-        case 'CANCELLED':
-        case 'FAILED':
-          localStatus =
-            'Canceled';
-          break;
-      }
-
-      if (
-        shippingRecord.status ===
-        localStatus
-      ) {
-        return {
-          success: true,
-          message:
-            'Status unchanged',
-        };
-      }
-
-      const oldStatus =
-        shippingRecord.status;
-
-      shippingRecord.status =
-        localStatus;
-
-      shippingRecord.update_at =
-        new Date();
-
-      await this.shippingRepo.save(
-        shippingRecord,
-      );
-
-      /**
-       * Hoàn lại tồn kho nếu giao hàng thất bại
-       * Chỉ chạy 1 lần khi chuyển sang Canceled
-       */
-      if (
-        localStatus === 'Canceled' &&
-        oldStatus !== 'Canceled'
-      ) {
-        const orderDetails =
-          await this.orderDetailRepo.find({
-            where: {
-              order_id:
-                shippingRecord.order_id,
-            },
-          });
-
-        for (const item of orderDetails) {
-          await this.variantRepo.increment(
-            {
-              id: item.variant_id,
-            },
-            'quantity',
-            item.quantity,
-          );
-        }
-
-        console.log(
-          `[Webhook] Inventory restored for order ${shippingRecord.order_id}`,
-        );
-      }
-
-        console.log(
-          'Order updated -> SHIPPING_FAILED',
-        );
-
+      case 'FAILED':
+      case 'CANCELED':
+      case 'CANCELLED':
+        localStatus = 'Canceled';
         break;
     }
+
+    if (
+      shippingRecord.status ===
+      localStatus
+    ) {
+      return {
+        success: true,
+        message:
+          'Status unchanged',
+      };
+    }
+
+    const oldStatus =
+      shippingRecord.status;
+
+    shippingRecord.status =
+      localStatus;
+
+    shippingRecord.update_at =
+      new Date();
+
+    await this.shippingRepo.save(
+      shippingRecord,
+    );
+
+    /**
+     * Hoàn kho khi giao thất bại
+     */
+    if (
+      localStatus === 'Canceled' &&
+      oldStatus !== 'Canceled'
+    ) {
+      const orderDetails =
+        await this.orderDetailRepo.find({
+          where: {
+            order_id:
+              shippingRecord.order_id,
+          },
+        });
+
+      for (const item of orderDetails) {
+        await this.variantRepo.increment(
+          {
+            id: item.variant_id,
+          },
+          'quantity',
+          item.quantity,
+        );
+      }
+
+      await this.orderRepo.update(
+        {
+          id: shippingRecord.order_id,
+        },
+        {
+          status: 'ShippingFailed',
+        },
+      );
+
+      console.log(
+        `[Webhook] Inventory restored for order ${shippingRecord.order_id}`,
+      );
+    }
+
+    console.log(
+      `[Webhook] ${orderId} -> ${localStatus}`,
+    );
 
     return {
       success: true,
     };
+  } catch (error: any) {
+    console.log(
+      '===== WEBHOOK ERROR =====',
+    );
+
+    console.log(
+      error.message,
+    );
+
+    return {
+      success: false,
+      message: error.message,
+    };
   }
+}
 
   async processAhamoveCheckout(
     orderId: string,
