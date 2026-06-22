@@ -2,8 +2,7 @@ import { Logger, Injectable, NotFoundException, BadRequestException } from '@nes
 import { InjectRepository } from '@nestjs/typeorm';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto, UpdateOrderStatusDto } from './dto/update-order.dto';
-import { In, Repository, DataSource } from 'typeorm';
-
+import { Repository, DataSource,EntityManager } from 'typeorm';
 
 import { Order } from './entities/order.entity';
 import { User } from '../users/entities/user.entity';
@@ -139,130 +138,53 @@ export class OrdersService {
   }
 
 
-  async confirmOrder(orderId: string) {
+  async confirmOrder(
+    orderId: string,
+    manager?: EntityManager,
+  ) {
+    const em = manager ?? this.dataSource.manager;
 
-    return await this.dataSource.transaction(async manager => {
-
-      this.logger.log(`===== CONFIRM ORDER START =====`);
-      this.logger.log(`OrderId: ${orderId}`);
-
-      const order = await manager.findOne(Order, {
-        where: { id: orderId },
-      });
-
-      if (!order) {
-        this.logger.error(`Order ${orderId} not found`);
-        throw new NotFoundException(`Order with id ${orderId} not found`);
-      }
-
-      this.logger.log(`Order found: status=${order.status}, total=${order.total}`);
-
-
-      const payment = await manager.findOne(Payment, {
-        where: {
-          order_id: orderId,
-          status: "Completed",
-        },
-      });
-
-      if (!payment) {
-        this.logger.error(`Payment not completed for order ${orderId}`);
-        throw new BadRequestException("Payment not completed");
-      }
-
-      this.logger.log(`Payment found: amount=${payment.amount}`);
-
-
-      if (order.total === payment.amount && order.status === "Pending") {
-
-        this.logger.warn(`Order ${orderId} already processed`);
-
-        return {
-          message: "Order already processed",
-          order_id: orderId
-        };
-      }
-
-
-      this.logger.log(`Updating order status to Pending`);
-
-      order.total = payment.amount;
-      order.status = "Pending";
-
-      await manager.save(order);
-
-
-      const orderDetails = await manager.find(OrderDetail, {
-        where: { order_id: orderId },
-      });
-
-      this.logger.log(`OrderDetails count: ${orderDetails.length}`);
-
-      if (orderDetails.length === 0) {
-        this.logger.error(`Order ${orderId} has no items`);
-        throw new BadRequestException('Order has no items');
-      }
-
-
-      for (const item of orderDetails) {
-
-        this.logger.log(`Processing variant ${item.variant_id}`);
-        this.logger.log(`Order quantity: ${item.quantity}`);
-
-        const variant = await manager.findOne(ProductVariant, {
-          where: { id: item.variant_id },
-        });
-
-        if (!variant) {
-          this.logger.error(`Variant ${item.variant_id} not found`);
-          throw new NotFoundException(
-            `Variant with id ${item.variant_id} not found`,
-          );
-        }
-
-        this.logger.log(`Current stock: ${variant.quantity}`);
-
-        if (variant.quantity < item.quantity) {
-
-          this.logger.error(
-            `Stock not enough: stock=${variant.quantity}, order=${item.quantity}`
-          );
-
-          throw new BadRequestException(
-            `Product ${variant.name} not enough stock`,
-          );
-        }
-
-        variant.quantity -= item.quantity;
-
-        this.logger.log(`New stock after update: ${variant.quantity}`);
-
-        await manager.save(variant);
-      }
-
-
-      const cart = await manager.findOne(Cart, {
-        where: { user_id: order.customer_id },
-      });
-
-      if (cart) {
-
-        this.logger.log(`Clearing cart ${cart.id}`);
-
-        await manager.delete(CartItem, { cart_id: cart.id });
-      }
-
-      this.logger.log(`===== ORDER CONFIRMED SUCCESS =====`);
-
-      return {
-        message: "Order confirmed",
-        order_id: orderId,
-        amount_paid: payment.amount
-      };
-
+    const order = await em.findOne(Order, {
+      where: { id: orderId },
     });
-  }
 
+    if (!order) {
+      throw new NotFoundException(
+        `Order ${orderId} not found`,
+      );
+    }
+
+    if (
+      order.status === 'Confirmed' ||
+      order.status === 'Processing'
+    ) {
+      return {
+        message: 'Order already confirmed',
+        order_id: orderId,
+      };
+    }
+
+    order.status = 'Confirmed';
+
+    await em.save(order);
+
+    const cart = await em.findOne(Cart, {
+      where: {
+        user_id: order.customer_id,
+      },
+    });
+
+    if (cart) {
+      await em.delete(CartItem, {
+        cart_id: cart.id,
+      });
+    }
+
+    return {
+      message: 'Order confirmed',
+      order_id: orderId,
+    };
+  }
   async findAll() {
     const data = await this.ordersRepository
       .createQueryBuilder('o')
