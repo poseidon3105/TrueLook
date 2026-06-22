@@ -8,10 +8,12 @@ import { Order } from '../orders/entities/order.entity';
 import { OrderDetail } from '../order_details/entities/order_detail.entity';
 import { ShippingProvidersModule } from '../shipping_providers/shipping_providers.module';
 import { ShippingServicesModule } from '../shipping_services/shipping_services.module';
+import { CartItem } from '../cart_items/entities/cart_item.entity';
+import { ProductVariant } from '../product_variants/entities/product_variant.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Shipping, NhanhConfig, Order, OrderDetail]),
+    TypeOrmModule.forFeature([Shipping, NhanhConfig, Order, OrderDetail, CartItem, ProductVariant ]),
     ShippingProvidersModule,
     ShippingServicesModule,
   ],
